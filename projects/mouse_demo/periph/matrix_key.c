@@ -17,6 +17,7 @@
 #include "usb_cfg_info.h"
 #include "flash_process.h"
 #include "key_code_define.h"
+#include "led_effect.h"
 
 //----------------------------------------------------------------------------;
 //常量定义
@@ -271,6 +272,7 @@ define_key_process:
                     {
                         define_key_flag_n = (bdefine_key_press|bkey_decode);
                         key_ctrl |= bkey_press_status;
+                        led_key_press_hook(decode_index);   // 按键按下沿: 供响应式灯效 / 闲置调暗使用
 
                         if(define_key_ctrl & bcom_key_break)
                         {                       // 按键可打断

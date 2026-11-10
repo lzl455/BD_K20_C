@@ -90,10 +90,20 @@ typedef enum {
     iMODE_LED_SXTW      =12,                    // 双向拖尾
     iMODE_LED_TXTW      =13,                    // 对向拖尾
     iMODE_LED_FXTW      =14,                    // 反向拖尾
-    iMODE_LED_JG        =15,                    // 激光
+    iMODE_LED_JG        =15,                    // 激光（按键响应：按哪亮哪，逐渐熄灭）
 
-    iMODE_LED_MAX       =15,
-    iMODE_LED_INVALID   =16,
+    // ---- 新增灯效 (led_effect.c) ----
+    iMODE_LED_SOFT_ON   =16,                    // 办公柔光：静态暖白/柔和色，全彩=极慢流动的粉彩渐变
+    iMODE_LED_SOFT_BREATH=17,                   // 柔和呼吸：正弦曲线 + 最低亮度保底，不会熄灭
+    iMODE_LED_RAINBOW   =18,                    // 彩虹流动：平滑 HSV 彩虹；单色=同色亮度波
+    iMODE_LED_AURORA    =19,                    // 极光：绿→青→紫 的双波叠加
+    iMODE_LED_METEOR    =20,                    // 流星：亚像素平滑移动 + 渐隐拖尾
+    iMODE_LED_CANDLE    =21,                    // 烛光：暖琥珀色随机微闪
+    iMODE_LED_POMODORO  =22,                    // 番茄专注：灯条即进度条，到点柔和提醒
+    iMODE_LED_RIPPLE    =23,                    // 打字涟漪：按键位置向两侧扩散的光环
+
+    iMODE_LED_MAX       =23,
+    iMODE_LED_INVALID   =24,
     iLOGO_INVALID   = 0x0F,
 } logo_mode_t;
 
@@ -205,6 +215,9 @@ extern void led_mode_lhtw(void);
 extern void led_mode_dxtw(void);
 extern void led_mode_sxtw(void);
 extern void led_mode_txtw(void);
+
+extern void logo_mode_init(uint8_t mode);
+extern void logo_mode_run(uint8_t mode);
 //
 //-----------------------------------------------------------------------------;
 #endif

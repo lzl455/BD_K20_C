@@ -48,6 +48,7 @@
 #include <stddef.h>
 #include "drv_ledc.h"
 #include "led.h"
+#include "led_effect.h"
 #include "main.h"
 
 /*******************************************************************************
@@ -101,28 +102,8 @@ __RAM_CODE om_error_t drv_ledc_write()
     if(false == bargb_valid)
         return OM_ERROR_OK;
 OM_CRITICAL_BEGIN();
-    memcpy(pwm_temp, pwm_rgb_tbl, iLED_MAX*3);
-
-    if(iLED_LEV_4 == led_light_lev)
-    {
-        for(uint8_t i=0; i<iLED_MAX*3; i++)
-        {
-            if(iPWM_MAX <= pwm_temp[i])
-                pwm_temp[i] = 0xFF;
-            else
-                pwm_temp[i] <<= 2;
-        }
-    }
-    else if(iLED_LEV_3 == led_light_lev)
-    {
-        for(uint8_t i=0; i<iLED_MAX*3; i++)
-            pwm_temp[i] <<= 1;
-    }
-    else if(iLED_LEV_1 == led_light_lev)
-    {
-        for(uint8_t i=0; i<iLED_MAX*3; i++)
-            pwm_temp[i] >>= 1;
-    }
+    // gamma 校正 + 亮度档位 + 主亮度(淡入/闲置调暗), 见 led_effect.c
+    led_output_transform(&pwm_rgb_tbl[0][0], pwm_temp);
 
     OM_LEDC->DMA_CTL = ((uint32_t)pwm_temp << LEDC_DMA_CTL_DMA_ADDR_POS) | (LEDC_DMA_CTL_DMA_LEN_MASK & (iLED_MAX*3));
     // enable ledc

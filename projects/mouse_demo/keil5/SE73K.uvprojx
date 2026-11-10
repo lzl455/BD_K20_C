@@ -648,6 +648,11 @@
               <FileType>1</FileType>
               <FilePath>..\led\exLed.c</FilePath>
             </File>
+            <File>
+              <FileName>led_effect.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\led\led_effect.c</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

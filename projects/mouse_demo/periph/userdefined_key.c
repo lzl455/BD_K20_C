@@ -18,6 +18,7 @@
 #include "hid_process.h"
 #include "userdefined_key.h"
 #include "key_code_define.h"
+#include "led_effect.h"
 #include "flash_process.h"
 
 #include "matrix_key.h"
@@ -564,9 +565,7 @@ std_key_decode_1:
                                 if((0==(special_key_bak&bkey_mode_cyc_bak)) && (true==bled_bright_en))
                                 {
                                     special_key_bak |= bkey_mode_cyc_bak;
-                                    led_cur_mode++;
-                                    if(iMODE_LED_MAX<led_cur_mode)
-                                        led_cur_mode = iMODE_LED_ON;
+                                    led_cur_mode = led_mode_next(led_cur_mode);
                                     hid_ctrl_reg |= bdevice_status_change;
                                     key_ctrl |= bfn_save_status;
                                 }

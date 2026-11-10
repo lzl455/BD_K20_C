@@ -14,6 +14,7 @@
 #include "lvd.h"
 #include "led.h"
 #include "exLed.h"
+#include "led_effect.h"
 
 #include "flash.h"
 #include "flash_process.h"
@@ -221,42 +222,6 @@ void logo_off(void)
     }
 }
 
-void clr_rgb(void)
-{
-    memset(pwm_rgb_tbl, 0x00, iLED_MAX*3);
-}
-
-void rgb_pwm0_w(void)
-{
-    if(rgb_enable&iPWM_R)
-         pwm_rgb_tbl[gtemp_j][iR_INDEX] = pwm_duty_array_0[gtemp_x];
-     else
-         pwm_rgb_tbl[gtemp_j][iR_INDEX] = 0;
-    if(rgb_enable&iPWM_G)
-         pwm_rgb_tbl[gtemp_j][iG_INDEX] = pwm_duty_array_0[gtemp_x];
-     else
-         pwm_rgb_tbl[gtemp_j][iG_INDEX] = 0;
-    if(rgb_enable&iPWM_B)
-         pwm_rgb_tbl[gtemp_j][iB_INDEX] = pwm_duty_array_0[gtemp_x];
-     else
-         pwm_rgb_tbl[gtemp_j][iB_INDEX] = 0;          
-}
-
-void rgb_w_max(void)
-{
-    if(rgb_enable&iPWM_R)
-        pwm_rgb_tbl[gtemp_j][iR_INDEX] = iPWM_MAX;
-    else
-        pwm_rgb_tbl[gtemp_j][iR_INDEX] = 0;
-    if(rgb_enable&iPWM_G)
-        pwm_rgb_tbl[gtemp_j][iG_INDEX] = iPWM_MAX;
-    else
-        pwm_rgb_tbl[gtemp_j][iG_INDEX] = 0;
-    if(rgb_enable&iPWM_B)
-        pwm_rgb_tbl[gtemp_j][iB_INDEX] = iPWM_MAX;
-    else
-        pwm_rgb_tbl[gtemp_j][iB_INDEX] = 0;
-}
 
 extern void key_into_fcc_test(void);
 
@@ -465,6 +430,7 @@ void logo_process(void)
     {
         ledc_init();
         OM_GPIO0->DATAOUTCLR = (1<<ARGB_OUT_PIN);
+        led_master_restart(rtc_temp);           // 重新开灯 / 唤醒: 淡入
     }
     if(0 != exio_ctrl)
     {
@@ -472,143 +438,21 @@ void logo_process(void)
         exled_rtc_count=0;
     }
 
+    led_master_update(rtc_temp);
     if(led_pre_mode != led_cur_mode)
     {
         led_pre_mode = led_cur_mode;
-
-        led_process_index = 0;
-        rgb_index = 0;
-
-        clr_rgb();
-        memset(pwm_duty_array_0, 0x00, 16);
-        memset(pwm_duty_array_1, 0x00, 16);
-        memset(pwm_duty_array_2, 0x00, 16);
-        memset(pwm_duty_array_3, 0x00, 16);
-
-        switch(led_cur_mode)
-        {
-            case iMODE_LED_OFF:
-
-                break;
-            case iMODE_LED_ON:
-
-                break;
-            case iMODE_LED_BREATH:
-                pwm_time_count = 0;
-                delay_time_count = 0xFF;
-                rgb_enable = rgb_en_tbl[led_rgb_index&0x0F];
-
-                break;
-            case iMODE_LED_SNAKE:
-                snake_led_index = 4;
-                pwm_duty_array_0[4] = ((iPWM_MAX*4)/4);
-
-                break;
-            case iMODE_LED_NHJB:
-                delay_time_count = 0;
-                pwm_duty_array_0[0] = iPWM_MAX;
-                pwm_duty_array_0[1] = 0x00;
-                pwm_duty_array_0[2] = 0x00;
-
-                break;
-            case iMODE_LED_LG_L_R:
-                delay_time_count = 0;
-                led_status_reg = 0xCCCC;
-
-                for(i=0; i<iLED_MAX; i++)
-                {
-                    pwm_duty_array_0[i] = led_liuguang_l_r_tbl[i];
-                    pwm_duty_array_1[i] = led_liuguang_rgb_tbl[i];
-                }
-
-                break;
-            case iMODE_LED_STAR:
-                delay_time_count = 0;
-                snake_led_index = 0xFF;
-                lfsr_value = 0x55AA;
-                break;
-            case iMODE_LED_SBZL:
-                for(i=0; i<iLED_MAX; i++)
-                {
-                    pwm_duty_array_0[i] = sbzl_r_tbl[iLED_MAX-1-i];
-                    pwm_duty_array_1[i] = sbzl_g_tbl[iLED_MAX-1-i];
-                    pwm_duty_array_2[i] = sbzl_b_tbl[iLED_MAX-1-i];
-                    pwm_duty_array_3[i] = sbzl_ctrl_tbl[iLED_MAX-1-i];
-                }
-                break;
-            case iMODE_LED_BS:
-                break;
-            case iMODE_LED_QCNH:
-                break;
-            case iMODE_LED_LHTW:
-                break;
-            case iMODE_LED_DXTW:
-                snake_led_index = 3;
-                pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
-                break;
-            case iMODE_LED_SXTW:
-                snake_led_index = 3;
-                pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
-                bback_led_status = 0;
-                break;
-            case iMODE_LED_TXTW:
-            case iMODE_LED_FXTW:
-                snake_led_index = 3;
-                pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
-                break;
-            case iMODE_LED_JG:
-                led_use_flag = 0;
-                break;
-        }
+        logo_mode_init(led_cur_mode);
+        led_master_restart(rtc_temp);           // 切换模式: 从黑淡入, 帧时钟重新同步
     }
     else
     {
-        //bled_hint_ing = 1;
-
-        switch(led_cur_mode)
+        // 以 RTC 为基准推进固定帧数: USB(~8ms) / 2.4G(~4ms) / BLE 下灯效速度一致
+        i = led_frame_steps(rtc_temp);
+        while(i--)
         {
-            case iMODE_LED_OFF:
-                break;
-            case iMODE_LED_ON:
-                led_mode_on();
-                break;
-            case iMODE_LED_BREATH:
-                led_mode_breath();
-                break;
-            case iMODE_LED_SNAKE:
-                led_mode_snake();
-                break;
-            case iMODE_LED_NHJB:
-                led_mode_nhjb();
-                break;
-            case iMODE_LED_LG_L_R:
-                led_mode_liuguang();
-                break;
-            case iMODE_LED_STAR:
-                led_mode_star();
-                break;
-            case iMODE_LED_SBZL:
-                led_mode_sbzl();
-                break;
-            case iMODE_LED_BS:
-                led_mode_baoshan();
-                break;
-            case iMODE_LED_QCNH:
-                led_mode_qcnh();
-                break;
-            case iMODE_LED_LHTW:
-                led_mode_lhtw();
-                break;
-            case iMODE_LED_DXTW:
-                led_mode_dxtw();
-                break;
-            case iMODE_LED_SXTW:
-                led_mode_sxtw();
-                break;
-            case iMODE_LED_TXTW:
-            case iMODE_LED_FXTW:
-                led_mode_txtw();
-                break;
+            led_master_step();
+            logo_mode_run(led_cur_mode);
         }
     }
 }

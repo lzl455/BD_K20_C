@@ -13,6 +13,7 @@
 #include "main.h"
 #include "led.h"
 #include "led_logo_tbl.h"
+#include "led_effect.h"
 
 //-----------------------------------------------------------------------------;
 // 常量定义区
@@ -37,6 +38,47 @@ uint8_t                         snake_led_index;
 //=============================================================================;
 // 代码区                                                                      ;
 //=============================================================================;
+
+//-----------------------------------------------------------------------------;
+// 像素写入工具 (原在 led.c)
+//
+void clr_rgb(void)
+{
+    memset(pwm_rgb_tbl, 0x00, iLED_MAX*3);
+}
+
+void rgb_pwm0_w(void)
+{
+    if(rgb_enable&iPWM_R)
+         pwm_rgb_tbl[gtemp_j][iR_INDEX] = pwm_duty_array_0[gtemp_x];
+     else
+         pwm_rgb_tbl[gtemp_j][iR_INDEX] = 0;
+    if(rgb_enable&iPWM_G)
+         pwm_rgb_tbl[gtemp_j][iG_INDEX] = pwm_duty_array_0[gtemp_x];
+     else
+         pwm_rgb_tbl[gtemp_j][iG_INDEX] = 0;
+    if(rgb_enable&iPWM_B)
+         pwm_rgb_tbl[gtemp_j][iB_INDEX] = pwm_duty_array_0[gtemp_x];
+     else
+         pwm_rgb_tbl[gtemp_j][iB_INDEX] = 0;          
+}
+
+void rgb_w_max(void)
+{
+    if(rgb_enable&iPWM_R)
+        pwm_rgb_tbl[gtemp_j][iR_INDEX] = iPWM_MAX;
+    else
+        pwm_rgb_tbl[gtemp_j][iR_INDEX] = 0;
+    if(rgb_enable&iPWM_G)
+        pwm_rgb_tbl[gtemp_j][iG_INDEX] = iPWM_MAX;
+    else
+        pwm_rgb_tbl[gtemp_j][iG_INDEX] = 0;
+    if(rgb_enable&iPWM_B)
+        pwm_rgb_tbl[gtemp_j][iB_INDEX] = iPWM_MAX;
+    else
+        pwm_rgb_tbl[gtemp_j][iB_INDEX] = 0;
+}
+
 
 /******************************************************************************
 * 函数名称: led_hint_process
@@ -375,11 +417,19 @@ void led_mode_liuguang(void)
     }
 }
 
-unsigned char       const   start_dec_delay[]={
+// 速度档位共 5 级 (iSPEED_LEV_MIN..iSPEED_LEV_MAX), 原表只有 4 项且用 &0x03 取值,
+// 导致最慢一档回绕成最快; 现统一补齐 5 项并用 led_speed_idx() 取值
+static uint8_t led_speed_idx(void)
+{
+    return (led_speed_lev > iSPEED_LEV_MAX) ? (uint8_t)iSPEED_LEV_MAX : (uint8_t)led_speed_lev;
+}
+
+unsigned char       const   start_dec_delay[iSPEED_LEV_MAX+1]={
     25,
     50,
     100,
     150,
+    200,
 };
 
 /******************************************************************************
@@ -394,11 +444,10 @@ void led_mode_star(void)
     unsigned char i, j;
     
     delay_time_count++;
-    i = start_dec_delay[led_speed_lev&0x03];
+    i = start_dec_delay[led_speed_idx()];
     if(i > delay_time_count)
     {
-        start_dec_count++;
-        if(led_speed_lev>start_dec_count)
+        if(led_speed_lev>start_dec_count)       // 原代码此处 ++ 了两次, 速度档位只生效一半
         {
             start_dec_count++;
             return;
@@ -533,11 +582,12 @@ void led_mode_sbzl(void)
     }
 }
 
-unsigned int       const   bs_dec_delay[8]={
+unsigned int       const   bs_dec_delay[iSPEED_LEV_MAX+1]={
     50,
     100,
     150,
     300,
+    400,
 };
 
 /******************************************************************************
@@ -550,7 +600,7 @@ unsigned int       const   bs_dec_delay[8]={
 void led_mode_baoshan(void)
 {
     delay_time_count++;
-    if(bs_dec_delay[led_speed_lev&0x03] > delay_time_count)
+    if(bs_dec_delay[led_speed_idx()] > delay_time_count)
         return;
 
     delay_time_count = 0;
@@ -653,11 +703,12 @@ unsigned char       const   qcnh_en_tbl[]={
     iPWM_R,
     iPWM_G,
 };
-unsigned int       const   qcnh_dec_delay[]={
+unsigned int       const   qcnh_dec_delay[iSPEED_LEV_MAX+1]={
     50,
     100,
     150,
     200,
+    250,
 };
 /******************************************************************************
 * 函数名称: led_mode_snake
@@ -671,7 +722,7 @@ void led_mode_qcnh(void)
     unsigned char i;
 
     delay_time_count++;
-    if(qcnh_dec_delay[led_speed_lev&0x03] > delay_time_count)
+    if(qcnh_dec_delay[led_speed_idx()] > delay_time_count)
         return;
 
     delay_time_count = 0;
@@ -690,11 +741,12 @@ void led_mode_qcnh(void)
         rgb_index = 0;
 }
 
-unsigned int       const   lhtw_dec_delay[]={
+unsigned int       const   lhtw_dec_delay[iSPEED_LEV_MAX+1]={
     10,
     20,
     30,
     40,
+    50,
 };
 /******************************************************************************
 * 函数名称: led_mode_snake
@@ -708,7 +760,7 @@ void led_mode_lhtw(void)
     unsigned char i;
 
     delay_time_count++;
-    if(lhtw_dec_delay[led_speed_lev&0x03] > delay_time_count)
+    if(lhtw_dec_delay[led_speed_idx()] > delay_time_count)
         return;
 
     delay_time_count = 0;
@@ -975,5 +1027,150 @@ void led_mode_txtw(void)
         rgb_pwm0_w();
         gtemp_j = 4;
         rgb_pwm0_w();
+    }
+}
+
+/******************************************************************************
+* 函数名称: logo_mode_init
+* 功能描述: 切换到 mode 时初始化灯效状态 (原 logo_process 中的 switch)
+******************************************************************************/
+void logo_mode_init(uint8_t mode)
+{
+    uint8_t i;
+
+    led_process_index = 0;
+    rgb_index = 0;
+
+    clr_rgb();
+    memset(pwm_duty_array_0, 0x00, 16);
+    memset(pwm_duty_array_1, 0x00, 16);
+    memset(pwm_duty_array_2, 0x00, 16);
+    memset(pwm_duty_array_3, 0x00, 16);
+
+    switch(mode)
+    {
+        case iMODE_LED_OFF:
+        case iMODE_LED_ON:
+            break;
+        case iMODE_LED_BREATH:
+            pwm_time_count = 0;
+            delay_time_count = 0xFF;
+            rgb_enable = rgb_en_tbl[led_rgb_index&0x0F];
+            break;
+        case iMODE_LED_SNAKE:
+            snake_led_index = 4;
+            pwm_duty_array_0[4] = ((iPWM_MAX*4)/4);
+            break;
+        case iMODE_LED_NHJB:
+            delay_time_count = 0;
+            pwm_duty_array_0[0] = iPWM_MAX;
+            pwm_duty_array_0[1] = 0x00;
+            pwm_duty_array_0[2] = 0x00;
+            break;
+        case iMODE_LED_LG_L_R:
+            delay_time_count = 0;
+            led_status_reg = 0xCCCC;
+            for(i=0; i<iLED_MAX; i++)
+            {
+                pwm_duty_array_0[i] = led_liuguang_l_r_tbl[i];
+                pwm_duty_array_1[i] = led_liuguang_rgb_tbl[i];
+            }
+            break;
+        case iMODE_LED_STAR:
+            delay_time_count = 0;
+            snake_led_index = 0xFF;
+            lfsr_value = 0x55AA;
+            break;
+        case iMODE_LED_SBZL:
+            for(i=0; i<iLED_MAX; i++)
+            {
+                pwm_duty_array_0[i] = sbzl_r_tbl[iLED_MAX-1-i];
+                pwm_duty_array_1[i] = sbzl_g_tbl[iLED_MAX-1-i];
+                pwm_duty_array_2[i] = sbzl_b_tbl[iLED_MAX-1-i];
+                pwm_duty_array_3[i] = sbzl_ctrl_tbl[iLED_MAX-1-i];
+            }
+            break;
+        case iMODE_LED_BS:
+        case iMODE_LED_QCNH:
+        case iMODE_LED_LHTW:
+            break;
+        case iMODE_LED_DXTW:
+            snake_led_index = 3;
+            pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
+            break;
+        case iMODE_LED_SXTW:
+            snake_led_index = 3;
+            pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
+            bback_led_status = 0;
+            break;
+        case iMODE_LED_TXTW:
+        case iMODE_LED_FXTW:
+            snake_led_index = 3;
+            pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
+            break;
+        default:                                // 激光 及 新增灯效
+            led_effect_init(mode);
+            break;
+    }
+}
+
+/******************************************************************************
+* 函数名称: logo_mode_run
+* 功能描述: 推进一帧 (原 logo_process 中的 switch)
+******************************************************************************/
+void logo_mode_run(uint8_t mode)
+{
+    switch(mode)
+    {
+        case iMODE_LED_OFF:
+            break;
+        case iMODE_LED_ON:
+            led_mode_on();
+            break;
+        case iMODE_LED_BREATH:
+            led_mode_breath();
+            break;
+        case iMODE_LED_SNAKE:
+            led_mode_snake();
+            break;
+        case iMODE_LED_NHJB:
+            led_mode_nhjb();
+            break;
+        case iMODE_LED_LG_L_R:
+            led_mode_liuguang();
+            break;
+        case iMODE_LED_STAR:
+            led_mode_star();
+            break;
+        case iMODE_LED_SBZL:
+            led_mode_sbzl();
+            break;
+        case iMODE_LED_BS:
+            led_mode_baoshan();
+            break;
+        case iMODE_LED_QCNH:
+            led_mode_qcnh();
+            break;
+        case iMODE_LED_LHTW:
+            led_mode_lhtw();
+            break;
+        case iMODE_LED_DXTW:
+            led_mode_dxtw();
+            break;
+        case iMODE_LED_SXTW:
+            led_mode_sxtw();
+            break;
+        case iMODE_LED_TXTW:
+        case iMODE_LED_FXTW:
+            led_mode_txtw();
+            break;
+        default:
+            if(mode > iMODE_LED_MAX)
+            {                                   // Flash / 上位机给出非法值: 回到常亮
+                led_cur_mode = iMODE_LED_ON;
+                break;
+            }
+            led_effect_run(mode);               // 激光 及 新增灯效
+            break;
     }
 }

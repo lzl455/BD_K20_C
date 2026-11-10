@@ -17,6 +17,7 @@
 #include "led.h"
 
 #include "key_code_define.h"
+#include "led_effect.h"
 #include "flash_process.h"
 #include "hid_process.h"
 
@@ -74,9 +75,7 @@ void wheel_scan(void)
                 }
                 else
                 {
-                    led_cur_mode++;
-                    if(iMODE_LED_MAX<led_cur_mode)
-                        led_cur_mode = iMODE_LED_ON;
+                    led_cur_mode = led_mode_next(led_cur_mode);
                     bsave_status = true;
                 }
             }
