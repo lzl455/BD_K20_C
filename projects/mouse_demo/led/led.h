@@ -75,32 +75,32 @@ enum speed_level
 };
 
 typedef enum {
-    iMODE_LED_OFF       =0,
-    iMODE_LED_ON        =1,                     // 常亮
-    iMODE_LED_BREATH    =2,                     // 呼吸
-    iMODE_LED_SNAKE     =3,                     // 
-    iMODE_LED_NHJB      =4,                     // 霓虹渐变
-    iMODE_LED_LG_L_R    =5,                     // 流光
-    iMODE_LED_STAR      =6,                     // 繁星点点
-    iMODE_LED_SBZL      =7,                     // 随波逐流
-    iMODE_LED_BS        =8,                     // 爆闪
-    iMODE_LED_QCNH      =9,                     // 七彩霓虹
-    iMODE_LED_LHTW      =10,                    // 来回拖尾
-    iMODE_LED_DXTW      =11,                    // 单向拖尾
-    iMODE_LED_SXTW      =12,                    // 双向拖尾
-    iMODE_LED_TXTW      =13,                    // 对向拖尾
-    iMODE_LED_FXTW      =14,                    // 反向拖尾
-    iMODE_LED_JG        =15,                    // 激光（按键响应：按哪亮哪，逐渐熄灭）
-
-    // ---- 新增灯效 (led_effect.c) ----
-    iMODE_LED_SOFT_ON   =16,                    // 办公柔光：静态暖白/柔和色，全彩=极慢流动的粉彩渐变
-    iMODE_LED_SOFT_BREATH=17,                   // 柔和呼吸：正弦曲线 + 最低亮度保底，不会熄灭
-    iMODE_LED_RAINBOW   =18,                    // 彩虹流动：平滑 HSV 彩虹；单色=同色亮度波
-    iMODE_LED_AURORA    =19,                    // 极光：绿→青→紫 的双波叠加
-    iMODE_LED_METEOR    =20,                    // 流星：亚像素平滑移动 + 渐隐拖尾
-    iMODE_LED_CANDLE    =21,                    // 烛光：暖琥珀色随机微闪
-    iMODE_LED_POMODORO  =22,                    // 番茄专注：灯条即进度条，到点柔和提醒
-    iMODE_LED_RIPPLE    =23,                    // 打字涟漪：按键位置向两侧扩散的光环
+    // 编号与上位机 / Flash 保持兼容, 名称为重新设计后的灯效 (实现见 led_effect.c)
+    // 颜色 led_rgb_index 0..7 = 主题色板: 落日 抹茶 海盐 星云 琥珀 薄荷苏打 月光 幻彩
+    iMODE_LED_OFF       =0,                     // 关闭
+    iMODE_LED_GLAZE     =1,                     // 釉光渐变   (原 常亮)
+    iMODE_LED_TIDE      =2,                     // 潮汐呼吸   (原 呼吸)
+    iMODE_LED_TWIN      =3,                     // 双星       (原 跑马)
+    iMODE_LED_SHIFT     =4,                     // 渐变流转   (原 霓虹渐变)
+    iMODE_LED_FLOW      =5,                     // 流光       (原 流光)
+    iMODE_LED_STARDUST  =6,                     // 星屑       (原 繁星点点)
+    iMODE_LED_WATER     =7,                     // 波光       (原 随波逐流)
+    iMODE_LED_HEART     =8,                     // 心跳       (原 爆闪)
+    iMODE_LED_NEON      =9,                     // 霓虹灯牌   (原 七彩霓虹)
+    iMODE_LED_PENDULUM  =10,                    // 钟摆       (原 来回拖尾)
+    iMODE_LED_SHOWER    =11,                    // 流星雨     (原 单向拖尾)
+    iMODE_LED_COLLIDE   =12,                    // 对撞       (原 双向拖尾)
+    iMODE_LED_BLOOM     =13,                    // 绽放       (原 对向拖尾)
+    iMODE_LED_CURTAIN   =14,                    // 幕布       (原 反向拖尾)
+    iMODE_LED_AFTERGLOW =15,                    // 余晖 按键  (原 激光)
+    iMODE_LED_SOFT_ON   =16,                    // 柔光       (原 办公柔光)
+    iMODE_LED_LAVA      =17,                    // 熔岩灯     (原 柔和呼吸)
+    iMODE_LED_BAND      =18,                    // 色带流动   (原 彩虹流动)
+    iMODE_LED_AURORA    =19,                    // 极光
+    iMODE_LED_FIREFLY   =20,                    // 萤火虫     (原 流星)
+    iMODE_LED_FIRE      =21,                    // 篝火       (原 烛光)
+    iMODE_LED_POMODORO  =22,                    // 番茄专注
+    iMODE_LED_RIPPLE    =23,                    // 打字涟漪
 
     iMODE_LED_MAX       =23,
     iMODE_LED_INVALID   =24,
@@ -156,9 +156,6 @@ extern unsigned char            led_rgb_index;
 extern unsigned char            pwm_value;
 extern enum led_level           led_light_lev;
 
-extern uint16_t                 lfsr_value;
-extern uint8_t                  start_dec_count;
-extern uint8_t                  snake_led_index;
 
 extern uint8_t                  pwm_time_count;
 extern uint16_t                 delay_time_count;
@@ -174,14 +171,7 @@ extern uint8_t                  pwm_duty_array_1[];
 extern uint8_t                  pwm_duty_array_2[];
 extern uint8_t                  pwm_duty_array_3[];
 
-extern unsigned char    const   rgb_en_tbl[];
 
-extern unsigned char    const   led_liuguang_l_r_tbl[];
-extern unsigned char    const   led_liuguang_rgb_tbl[];
-extern unsigned char    const   sbzl_r_tbl[];
-extern unsigned char    const   sbzl_g_tbl[];
-extern unsigned char    const   sbzl_b_tbl[];
-extern unsigned char    const   sbzl_ctrl_tbl[];
 
 
 //-----------------------------------------------------------------------------;
@@ -198,22 +188,6 @@ extern void device_led_process(void);
 extern void logo_process(void);
 
 extern void clr_rgb(void);
-extern void rgb_pwm0_w(void);
-extern void rgb_w_max(void);
-
-extern void led_mode_on(void);
-extern void led_mode_breath(void);
-extern void led_mode_snake(void);
-extern void led_mode_nhjb(void);
-extern void led_mode_star(void);
-extern void led_mode_sbzl(void);
-
-extern void led_mode_baoshan(void);
-extern void led_mode_qcnh(void);
-extern void led_mode_lhtw(void);
-extern void led_mode_dxtw(void);
-extern void led_mode_sxtw(void);
-extern void led_mode_txtw(void);
 
 extern void logo_mode_init(uint8_t mode);
 extern void logo_mode_run(uint8_t mode);

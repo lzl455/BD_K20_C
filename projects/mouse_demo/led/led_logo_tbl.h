@@ -33,28 +33,6 @@
 #define RGB_COLOR_MAX         8
 #define RGB_COLOR_INIT        7
 
-unsigned char       const   rgb_en_tbl[]={
-    iPWM_R,
-    iPWM_G,
-    iPWM_B,
-    iPWM_R|iPWM_B,
-    iPWM_R|iPWM_G,
-    iPWM_G|iPWM_B,
-    iPWM_W,
-    iPWM_R|iPWM_G|iPWM_B,
-
-    iPWM_R,
-    iPWM_G,
-    iPWM_B,
-    iPWM_R|iPWM_B,
-    iPWM_R|iPWM_G,
-    iPWM_G|iPWM_B,
-    iPWM_W,
-    iPWM_R|iPWM_G|iPWM_B,
-
-    0x0F,
-};
-
 unsigned char       const       led_single_table[] =
 {
 // C2
@@ -202,22 +180,6 @@ unsigned char       const       led_single_table[] =
     0,//iMMK_MUTE_L,        iKEY_TYPE_MMK | iMMK_MUTE_H,
     0,//iSTD_NULL,          iKEY_TYPE_INVALID,
 };
-
-unsigned char       const       led_liuguang_l_r_tbl[]={
-    63, 32,  0, 32, 63, 32,  0, 32, 63, 32,  0, 32,63, 32, 0, 32,
-};
-unsigned char       const       led_liuguang_rgb_tbl[]={
-      1,  2,  3,  4,  6,  7,  1,  2,  3,  4,  6,  7,  1,  2, 3,  4,
-};
-
-unsigned char       const   sbzl_r_tbl[]={
- 60, 40, 20,  0,  0,  0,  0, 20, 40, 60, 40, 20,  0,  0,  0,  0,};
-unsigned char       const   sbzl_g_tbl[]={
-  0, 20, 40, 60, 40, 20,  0,  0,  0,  0, 20, 40, 60, 40, 20,  0,};
-unsigned char       const   sbzl_b_tbl[]={
-  0,  0,  0,  0, 20, 40, 60, 40, 20,  0,  0,  0,  0, 20, 40, 60,};
-unsigned char       const   sbzl_ctrl_tbl[]={
-  0,  0,  0,  1,  1,  1,  2,  2,  2,  0,  0,  0,  1,  1,  1,  2,};
 
 //-----------------------------------------------------------------------------;
 

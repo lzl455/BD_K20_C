@@ -1,11 +1,12 @@
 /*******************************************************************************
 * 文件名称: led_effect.h
 *
-* 功能说明: 灯效扩展
+* 功能说明: 灯效引擎
 *   1. 输出管线: gamma 校正 + 亮度档位 + 主亮度淡入淡出 + 闲置自动调暗
 *   2. 帧同步  : 以 RTC 为基准的固定帧率, USB / 2.4G / BLE 下灯效速度一致
-*   3. 按键事件: 供 激光 / 打字涟漪 / 番茄专注 等响应式灯效使用
-*   4. 新增灯效: 见 led.h 中 iMODE_LED_SOFT_ON ~ iMODE_LED_RIPPLE
+*   3. 按键事件: 供 余晖 / 打字涟漪 / 番茄专注 等响应式灯效使用
+*   4. 主题色板: led_rgb_index 0..7 = 落日/抹茶/海盐/星云/琥珀/薄荷苏打/月光/幻彩
+*   5. 全部 23 个灯效, 见 led.h 中的模式列表
 *******************************************************************************/
 #ifndef _LED_EFFECT_H_
 #define _LED_EFFECT_H_
@@ -61,8 +62,10 @@ extern void led_output_transform(const uint8_t *src, uint8_t *dst);
 
 // 每次 logo_process 调用: 更新时间/闲置状态
 extern void led_master_update(uint32_t now);
-// 切换模式或重新开灯: 重置帧时钟并从 0 淡入
+// 重新开灯 / 唤醒: 重置帧时钟并从黑淡入
 extern void led_master_restart(uint32_t now);
+// 切换模式: 只重置帧时钟 (画面由交叉渐变过渡)
+extern void led_frame_resync(uint32_t now);
 // 计算本次应推进的帧数
 extern uint8_t led_frame_steps(uint32_t now);
 // 每帧调用: 推进主亮度淡入淡出

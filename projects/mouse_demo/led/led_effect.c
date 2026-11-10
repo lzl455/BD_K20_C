@@ -1,11 +1,18 @@
 /*******************************************************************************
 * 文件名称: led_effect.c
 *
-* 功能说明: 灯效扩展 —— 输出管线 / 帧同步 / 按键事件 / 新增灯效
+* 功能说明: 灯效引擎 —— 输出管线 / 帧同步 / 按键事件 / 主题色板 / 全部灯效
 *
-*   数值约定: pwm_rgb_tbl 中每个通道为 0..iPWM_MAX(64) 的"感知亮度",
-*             由 led_output_transform() 统一做 gamma + 档位 + 淡入淡出 后输出 0..255.
-*             所有灯效内部的亮度系数 lev 均为 0..256 (256 = 100%).
+*   设计定位: 桌搭颜值. 8 种"颜色"即 8 套主题色板, 所有灯效都从当前色板取色,
+*             任意 灯效 x 主题 的组合都是协调的配色.
+*
+*   数值约定:
+*     - 画布 fx_cv / 输出 pwm_rgb_hr: 每通道 0..iLED_HR_MAX(4096) 的感知亮度 (12bit)
+*     - 亮度系数 lev: 0..4096
+*     - 相位 / 色板位置: 0..65535 为一整圈
+*     - 位置 x: 8.8 定点, 单位为"颗灯", 0 = 第 0 颗灯中心
+*   输出由 led_output_transform() 统一做 gamma + 档位 + 淡入淡出.
+*   目标芯片为 Cortex-M0 (无硬件除法), 每帧计算量控制在数千指令内.
 *******************************************************************************/
 #include <string.h>
 #include "om_driver.h"
@@ -19,7 +26,6 @@
 //
 extern bool                     bled_run_dir;           // logo_mode.c
 extern unsigned char    const   led_single_table[];     // led_logo_tbl.h: 按键 -> 灯位置(0..6, 7=无)
-extern unsigned char    const   rgb_en_tbl[];           // led_logo_tbl.h: 颜色序号 -> RGB 位掩码
 
 //-----------------------------------------------------------------------------;
 // 输出管线 —— 以下数据会在 RAM 代码 (USB SOF 中断) 中访问, 不能放 const(flash)
@@ -73,77 +79,112 @@ static volatile bool            bled_key_activity;
 //-----------------------------------------------------------------------------;
 // 模式循环顺序 (Fn 切换键 / 滚轮切换)
 // 只影响"按键循环"的顺序与可选范围, 不影响模式编号 (上位机/Flash 兼容).
-// 如需办公优先, 可改为:
-//   iMODE_LED_SOFT_ON, iMODE_LED_SOFT_BREATH, iMODE_LED_CANDLE, iMODE_LED_POMODORO,
-//   iMODE_LED_RIPPLE,  iMODE_LED_ON, iMODE_LED_BREATH, ...
-// 爆闪 (iMODE_LED_BS) 已移出按键循环: 互补色高频交替闪烁, 不适合办公且对光敏人群不友好;
-// 上位机仍可直接设置该模式. 若当前模式不在表中, 按键切换会回到表中第一项.
+// 若当前模式不在表中, 按键切换会回到表中第一项.
 //
 static const uint8_t            led_mode_cycle_tbl[] = {
-    iMODE_LED_ON,       iMODE_LED_BREATH,   iMODE_LED_SNAKE,    iMODE_LED_NHJB,
-    iMODE_LED_LG_L_R,   iMODE_LED_STAR,     iMODE_LED_SBZL,
-    iMODE_LED_QCNH,     iMODE_LED_LHTW,     iMODE_LED_DXTW,     iMODE_LED_SXTW,
-    iMODE_LED_TXTW,     iMODE_LED_FXTW,     iMODE_LED_JG,
-    iMODE_LED_SOFT_ON,  iMODE_LED_SOFT_BREATH, iMODE_LED_RAINBOW, iMODE_LED_AURORA,
-    iMODE_LED_METEOR,   iMODE_LED_CANDLE,   iMODE_LED_POMODORO, iMODE_LED_RIPPLE,
+    iMODE_LED_GLAZE,    iMODE_LED_TIDE,     iMODE_LED_TWIN,     iMODE_LED_SHIFT,
+    iMODE_LED_FLOW,     iMODE_LED_STARDUST, iMODE_LED_WATER,    iMODE_LED_HEART,
+    iMODE_LED_NEON,     iMODE_LED_PENDULUM, iMODE_LED_SHOWER,   iMODE_LED_COLLIDE,
+    iMODE_LED_BLOOM,    iMODE_LED_CURTAIN,  iMODE_LED_AFTERGLOW,iMODE_LED_SOFT_ON,
+    iMODE_LED_LAVA,     iMODE_LED_BAND,     iMODE_LED_AURORA,   iMODE_LED_FIREFLY,
+    iMODE_LED_FIRE,     iMODE_LED_POMODORO, iMODE_LED_RIPPLE,
 };
 
-//-----------------------------------------------------------------------------;
-// 配色: 与 led_rgb_index 一一对应 (0红 1绿 2蓝 3紫 4黄 5青 6白 7全彩)
-// 新灯效使用更柔和的调色: 黄偏暖, 白为 ~3000K 暖白, 更适合办公
+//=============================================================================;
+// 主题色板                                                                     ;
+//=============================================================================;
+// led_rgb_index 0..7 对应 8 套主题, 色相与原"颜色"一致, 上位机的颜色名可沿用:
+//   0 红 -> 落日   1 绿 -> 抹茶   2 蓝 -> 海盐   3 紫 -> 星云
+//   4 黄 -> 琥珀   5 青 -> 薄荷苏打   6 白 -> 月光   7 全彩 -> 幻彩
+// 每套 6 个色标, 等距循环排列 (末尾接回开头), 数值为 sRGB (与 gamma 2.2 输出对应),
+// 可以直接用设计稿里的色值替换.
 //
-static const uint8_t            fx_palette[8][3] = {    // R, G, B (0..64)
-    {64,  0,  0},
-    { 0, 64,  0},
-    { 0,  0, 64},
-    {44,  0, 64},
-    {64, 46,  0},
-    { 0, 60, 64},
-    {64, 46, 28},
-    {64, 46, 28},
-};
-static const uint8_t            fx_pal_hue[8] = {  0,  85, 170, 200,  32, 128,  24,   0};
-static const uint8_t            fx_pal_sat[8] = {255, 255, 255, 255, 255, 255, 120, 255};
+#define iFX_THEME_STOPS         6
+#define iFX_STOP                10923                   // 相邻色标间距 = 65536/6
+#define iFX_THEME_SPECTRUM      7
+#define iFX_THEME_MOON          6
 
-static const uint8_t            fx_sin_tbl[256] = {     // round(127.5+127.5*sin(2πi/256))
-    128,131,134,137,140,143,146,149,152,155,158,162,165,167,170,173,
-    176,179,182,185,188,190,193,196,198,201,203,206,208,211,213,215,
-    218,220,222,224,226,228,230,232,234,235,237,238,240,241,243,244,
-    245,246,248,249,250,250,251,252,253,253,254,254,254,255,255,255,
-    255,255,255,255,254,254,254,253,253,252,251,250,250,249,248,246,
-    245,244,243,241,240,238,237,235,234,232,230,228,226,224,222,220,
-    218,215,213,211,208,206,203,201,198,196,193,190,188,185,182,179,
-    176,173,170,167,165,162,158,155,152,149,146,143,140,137,134,131,
-    128,124,121,118,115,112,109,106,103,100, 97, 93, 90, 88, 85, 82,
-     79, 76, 73, 70, 67, 65, 62, 59, 57, 54, 52, 49, 47, 44, 42, 40,
-     37, 35, 33, 31, 29, 27, 25, 23, 21, 20, 18, 17, 15, 14, 12, 11,
-     10,  9,  7,  6,  5,  5,  4,  3,  2,  2,  1,  1,  1,  0,  0,  0,
-      0,  0,  0,  0,  1,  1,  1,  2,  2,  3,  4,  5,  5,  6,  7,  9,
-     10, 11, 12, 14, 15, 17, 18, 20, 21, 23, 25, 27, 29, 31, 33, 35,
-     37, 40, 42, 44, 47, 49, 52, 54, 57, 59, 62, 65, 67, 70, 73, 76,
-     79, 82, 85, 88, 90, 93, 97,100,103,106,109,112,115,118,121,124,
+static const uint8_t            fx_theme[8][iFX_THEME_STOPS][3] = {
+    {{0xC2,0x18,0x5B},{0xFF,0x2E,0x63},{0xFF,0x5E,0x3A},{0xFF,0x9A,0x3C},{0xFF,0xC9,0x3C},{0xFF,0x7A,0x5C}}, // 落日
+    {{0x0B,0x6E,0x4F},{0x2E,0x9E,0x5B},{0x7B,0xC9,0x50},{0xC5,0xE8,0x6C},{0x8F,0xD6,0x94},{0x3F,0xA7,0x96}}, // 抹茶
+    {{0x0B,0x2D,0x7A},{0x15,0x65,0xC0},{0x00,0xA6,0xD6},{0x6E,0xE7,0xF9},{0x2E,0x86,0xDE},{0x1B,0x3F,0xA0}}, // 海盐
+    {{0x3A,0x0C,0xA3},{0x72,0x09,0xB7},{0xB5,0x17,0x9E},{0xF7,0x25,0x85},{0x7B,0x2C,0xBF},{0x43,0x61,0xEE}}, // 星云
+    {{0xE8,0x5D,0x04},{0xFF,0x8C,0x1A},{0xFF,0xB3,0x47},{0xFF,0xD2,0x7F},{0xFF,0xA6,0x2B},{0xFF,0x73,0x00}}, // 琥珀
+    {{0x00,0xD1,0xB2},{0x5E,0xF2,0xD6},{0xB8,0xF2,0xE6},{0xA0,0xC4,0xFF},{0xBD,0xB2,0xFF},{0x48,0xD1,0xCC}}, // 薄荷苏打
+    {{0xFF,0xD9,0xA8},{0xFF,0xE9,0xCF},{0xF4,0xF1,0xFF},{0xDC,0xE6,0xFF},{0xFF,0xF2,0xE0},{0xFF,0xCF,0x94}}, // 月光
+    {{0xFF,0x00,0x00},{0xFF,0xFF,0x00},{0x00,0xFF,0x00},{0x00,0xFF,0xFF},{0x00,0x00,0xFF},{0xFF,0x00,0xFF}}, // 幻彩
+};
+// 每套主题的"主色"位置 (纯色类灯效使用)
+static const uint16_t           fx_theme_main[8] = {
+    2*iFX_STOP, 2*iFX_STOP, 2*iFX_STOP, 1*iFX_STOP, 2*iFX_STOP, 1*iFX_STOP, 0, 0,
+};
+// 篝火专用色: 暗红 -> 橙 -> 金 -> 近白 (非循环)
+static const uint8_t            fx_fire_tbl[6][3] = {
+    {0x30,0x02,0x00},{0x8A,0x0E,0x00},{0xE0,0x30,0x00},{0xFF,0x6E,0x00},{0xFF,0xB0,0x20},{0xFF,0xE8,0xA8},
+};
+static const uint8_t            fx_firefly_rgb[3] = {0xC8,0xFF,0x3C};   // 幻彩主题下的萤火黄绿
+
+// 升余弦半周期表: round(65535*(1-cos(πi/64))/2)
+static const uint16_t           fx_cos_tbl[65] = {
+         0,    39,   158,   355,   630,   982,  1411,  1915,
+      2494,  3146,  3869,  4662,  5522,  6448,  7438,  8488,
+      9597, 10762, 11980, 13248, 14563, 15922, 17321, 18758,
+     20228, 21728, 23256, 24806, 26375, 27960, 29556, 31160,
+     32767, 34375, 35979, 37575, 39160, 40729, 42279, 43807,
+     45307, 46777, 48214, 49613, 50972, 52287, 53555, 54773,
+     55938, 57047, 58097, 59087, 60013, 60873, 61666, 62389,
+     63041, 63620, 64124, 64553, 64905, 65180, 65377, 65496,
+     65535,
 };
 
-//-----------------------------------------------------------------------------;
-// 灯效运行状态 (切换模式时清零)
-//
+// 速度档位倍率 (x/128): 第 2 档 (默认) = 1.0x
+static const uint8_t            fx_speed_mul[iSPEED_LEV_MAX+1] = {181, 128, 90, 64, 45};
+
+//=============================================================================;
+// 灯效运行状态 (切换模式时清零)                                                ;
+//=============================================================================;
 typedef struct {
-    int16_t                     pos;                    // 中心位置 (8.8, 单位: 灯)
-    uint16_t                    rad;                    // 半径 (8.8)
-    uint16_t                    life;                   // 剩余亮度 0..256
-    uint8_t                     hue;
+    uint16_t                    r, g, b;                // 0..4096
+} fx_rgb_t;
+
+typedef struct {                                        // 粒子: 流星 / 萤火虫 / 熔岩
+    int16_t                     x;                      // 位置 8.8
+    int16_t                     v;                      // 速度
+    uint16_t                    ph;                     // 相位
+    uint16_t                    t;                      // 计时 / 亮度
+    uint8_t                     c;                      // 色板位置 (高 8 位)
+    uint8_t                     a;                      // 激活
+} fx_pt_t;
+
+typedef struct {                                        // 打字涟漪
+    int16_t                     pos;
+    uint16_t                    rad;
+    uint16_t                    life;
+    uint8_t                     c;
 } fx_ripple_t;
 
+#define iFX_PT_NUM              3
 #define iFX_RIPPLE_NUM          4
+#define iFX_INTRO_FRAMES        200                     // 开机动画 ~1.6s
+#define iFX_XFADE_STEP          6                       // 切换模式交叉渐变 ~0.33s
 
-static uint32_t                 fx_cnt;
+static uint16_t                 fx_cv[iLED_MAX][3];     // 画布 (逻辑灯序, R G B)
+static uint16_t                 fx_tmp[iLED_MAX][3];    // 本帧新绘制的内容 (用于拖尾合成)
+static uint16_t                 fx_xf_from[iLED_MAX][3];// 交叉渐变起点 (物理灯序, 输出格式)
+static uint16_t                 fx_xf;                  // 交叉渐变剩余权重 0..256
+static uint8_t                  fx_intro;               // 开机动画剩余帧
+static bool                     fx_intro_done;
+
 static uint32_t                 fx_rtc0;
-static uint16_t                 fx_ph1, fx_ph2, fx_ph3; // 8.8 相位
-static int16_t                  fx_pos;
+static uint16_t                 fx_ph[3];
+static uint16_t                 fx_col;                 // 色板漂移位置
+static uint16_t                 fx_t;                   // 阶段计时 (帧)
+static uint16_t                 fx_t2;
 static uint8_t                  fx_state;
-static uint8_t                  fx_hue[iLED_MAX];
-static uint16_t                 fx_lv[iLED_MAX];
-static uint16_t                 fx_tg[iLED_MAX];
+static uint16_t                 fx_a[iLED_MAX];
+static uint16_t                 fx_b[iLED_MAX];
+static uint8_t                  fx_c[iLED_MAX];
+static fx_pt_t                  fx_pt[iFX_PT_NUM];
 static fx_ripple_t              fx_rp[iFX_RIPPLE_NUM];
 static uint16_t                 fx_rand_state = 0xACE1;
 
@@ -153,9 +194,10 @@ static uint16_t                 fx_rand_state = 0xACE1;
 
 /******************************************************************************
 * 函数名称: led_output_transform
-* 功能描述: pwm_rgb_tbl(0..64) -> LEDC 数据(0..255)
+* 功能描述: 画面 -> LEDC 数据(0..255)
 * 说    明: 由 drv_ledc_write() 在临界区内调用, 只访问 RAM.
-*           LED_GAMMA_EN=0 且主亮度=256 时, 输出与原移位方案完全一致.
+*           bled_hr_frame 时读 pwm_rgb_hr (12bit), 否则读 pwm_rgb_tbl (0..64);
+*           后者在 LED_GAMMA_EN=0 且主亮度=256 时与原移位方案完全一致.
 ******************************************************************************/
 __RAM_CODE void led_output_transform(const uint8_t *src, uint8_t *dst)
 {
@@ -212,7 +254,7 @@ __RAM_CODE void led_output_transform(const uint8_t *src, uint8_t *dst)
         o = (o * scale) >> 8;
 #if LED_GAMMA_EN
         if((0 == o) && (0 != v) && (0 != scale))
-            o = 1;                                      // 低档位下保留暗部 (拖尾不至于直接消失)
+            o = 1;                                      // 低档位下保留暗部
 #endif
         if(o > 0xFF)
             o = 0xFF;
@@ -245,13 +287,20 @@ void led_master_update(uint32_t now)
 #endif
 }
 
+/* 开灯 / 唤醒: 从黑淡入 */
 void led_master_restart(uint32_t now)
 {
-    led_frame_rtc = now;
-    led_idle_rtc = now;                                 // 开灯/切换模式视为一次操作
+    led_frame_resync(now);
 #if LED_FADE_EN
     led_master_fade = 0;
 #endif
+}
+
+/* 切换模式: 只重置帧时钟 (画面由交叉渐变过渡, 不闪黑) */
+void led_frame_resync(uint32_t now)
+{
+    led_frame_rtc = now;
+    led_idle_rtc = now;                                 // 视为一次操作
 }
 
 /******************************************************************************
@@ -369,13 +418,8 @@ uint8_t led_mode_next(uint8_t mode)
 }
 
 //=============================================================================;
-// 绘制工具                                                                     ;
+// 基础工具                                                                     ;
 //=============================================================================;
-
-static uint8_t fx_sin8(uint8_t x)
-{
-    return fx_sin_tbl[x];
-}
 
 static uint8_t fx_rand8(void)
 {
@@ -392,455 +436,1001 @@ static uint8_t fx_spd(void)
     return (led_speed_lev > iSPEED_LEV_MAX) ? (uint8_t)iSPEED_LEV_MAX : (uint8_t)led_speed_lev;
 }
 
-static bool fx_multi(void)
+static uint8_t fx_theme_idx(void)
 {
-    return (iRGB_QICAI == (led_rgb_index & 0x07));
+    return (uint8_t)(led_rgb_index & 0x07);
 }
 
-static const uint8_t *fx_pal(void)
+/* 按速度档位缩放的每帧增量 (至少为 1) */
+static uint16_t fx_k(uint16_t base)
 {
-    return fx_palette[led_rgb_index & 0x07];
+    uint32_t v = ((uint32_t)base * fx_speed_mul[fx_spd()]) >> 7;
+    return (uint16_t)(v ? v : 1);
 }
 
-/* 逻辑位置 -> 物理灯序号, 跟随 bled_run_dir */
-static uint8_t fx_idx(uint8_t k)
+/* 按速度档位缩放的持续帧数 */
+static uint16_t fx_dur(uint16_t base)
 {
-    return bled_run_dir ? (uint8_t)(iLED_MAX - 1 - k) : k;
+    return (uint16_t)(((uint32_t)base * 128) / fx_speed_mul[fx_spd()]);
 }
 
-/* HSV -> RGB, h/s: 0..255, v: 0..64 */
-static void fx_hsv(uint8_t h, uint8_t s, uint8_t v, uint8_t *rgb)
+static uint16_t fx_abs16(int32_t v)
 {
-    uint8_t region, rem, p, q, t;
-
-    if(0 == s)
-    {
-        rgb[0] = rgb[1] = rgb[2] = v;
-        return;
-    }
-    region = h / 43;
-    rem    = (uint8_t)((h - region * 43) * 6);
-    p = (uint8_t)((v * (255 - s)) >> 8);
-    q = (uint8_t)((v * (255 - ((s * rem) >> 8))) >> 8);
-    t = (uint8_t)((v * (255 - ((s * (255 - rem)) >> 8))) >> 8);
-
-    switch(region)
-    {
-        case 0:  rgb[0] = v; rgb[1] = t; rgb[2] = p; break;
-        case 1:  rgb[0] = q; rgb[1] = v; rgb[2] = p; break;
-        case 2:  rgb[0] = p; rgb[1] = v; rgb[2] = t; break;
-        case 3:  rgb[0] = p; rgb[1] = q; rgb[2] = v; break;
-        case 4:  rgb[0] = t; rgb[1] = p; rgb[2] = v; break;
-        default: rgb[0] = v; rgb[1] = p; rgb[2] = q; break;
-    }
+    return (uint16_t)((v < 0) ? -v : v);
 }
 
-/* 写入一颗灯: rgb(0..64) * lev(0..256) */
-static void fx_put(uint8_t i, const uint8_t *rgb, uint16_t lev)
+/* 升余弦: p=0 为 0, p=32768 为 65535, 一圈平滑起伏 */
+static uint16_t fx_wave(uint16_t p)
 {
-    if(lev > 256)
-        lev = 256;
-    pwm_rgb_tbl[i][iR_INDEX] = (uint8_t)((rgb[0] * lev) >> 8);
-    pwm_rgb_tbl[i][iG_INDEX] = (uint8_t)((rgb[1] * lev) >> 8);
-    pwm_rgb_tbl[i][iB_INDEX] = (uint8_t)((rgb[2] * lev) >> 8);
-}
-
-/* 叠加一颗灯 (饱和到 iPWM_MAX) */
-static void fx_add(uint8_t i, const uint8_t *rgb, uint16_t lev)
-{
-    static const uint8_t ch[3] = {iR_INDEX, iG_INDEX, iB_INDEX};
-    uint8_t c;
-    uint16_t v;
-
-    if(lev > 256)
-        lev = 256;
-    for(c=0; c<3; c++)
-    {
-        v = (uint16_t)(pwm_rgb_tbl[i][ch[c]] + ((rgb[c] * lev) >> 8));
-        pwm_rgb_tbl[i][ch[c]] = (uint8_t)((v > iPWM_MAX) ? iPWM_MAX : v);
-    }
-}
-
-/* 单色模式下取色: 全彩时返回 hue 对应的颜色 */
-static void fx_color(uint8_t hue, uint8_t sat, uint8_t *rgb)
-{
-    if(fx_multi())
-        fx_hsv(hue, sat, iPWM_MAX, rgb);
-    else
-        memcpy(rgb, fx_pal(), 3);
-}
-
-//=============================================================================;
-// 灯效实现                                                                     ;
-//=============================================================================;
-
-/******************************************************************************
-* 流光 (重写, 去抖动): 亮度波沿灯条流动, 波长 4 颗灯; 全彩时每颗灯在最暗处换色
-*   原实现的抖动来源及对应处理:
-*   1. 内部只有 0..64 共 65 级, gamma 后高亮区一级 ≈ 9/255  -> 写 12bit 高精度缓冲
-*   2. 用"跳帧"降速, 亮度每 2~5 帧才变一次, 形成可见台阶  -> 相位按 RTC 时间连续推进
-*   3. 三角波在波峰处突然折返                              -> 升余弦波, 首尾平滑
-*   4. 波谷完全熄灭再点亮, 且在此瞬间切换颜色              -> 保留 ~12% 感知亮度底光,
-*                                                            颜色在波谷附近交叉渐变
-*   周期 (速度档位): 1 / 2 / 3 / 4 / 5 秒, 与原实现在 USB 下的速度一致
-******************************************************************************/
-static const uint16_t           fx_lg_cos_tbl[65] = {   // round(65535*(1-cos(πi/64))/2)
-         0,    39,   158,   355,   630,   982,  1411,  1915,
-      2494,  3146,  3869,  4662,  5522,  6448,  7438,  8488,
-      9597, 10762, 11980, 13248, 14563, 15922, 17321, 18758,
-     20228, 21728, 23256, 24806, 26375, 27960, 29556, 31160,
-     32767, 34375, 35979, 37575, 39160, 40729, 42279, 43807,
-     45307, 46777, 48214, 49613, 50972, 52287, 53555, 54773,
-     55938, 57047, 58097, 59087, 60013, 60873, 61666, 62389,
-     63041, 63620, 64124, 64553, 64905, 65180, 65377, 65496,
-     65535,
-};
-static const uint16_t           fx_lg_inc[5] = {512, 256, 171, 128, 102};   // 2^24 / 周期tick
-#define iFX_LG_FLOOR            492                     // 底光 ≈ 12% (感知亮度)
-#define iFX_LG_XFADE            6554                    // 波谷两侧 10% 周期内交叉换色
-#define iFX_LG_COLORS           7                       // 全彩颜色序列: rgb_en_tbl 1..7
-
-static uint32_t                 fx_lg_acc;              // 周期内相位 (2^24 = 1 周期)
-static uint32_t                 fx_lg_cyc;              // 已完成的周期数
-static uint32_t                 fx_lg_rtc;
-
-/* 升余弦: p(0..65535) -> 0..65535, p=0 为波谷, p=32768 为波峰 */
-static uint16_t fx_lg_wave(uint16_t p)
-{
-    uint32_t q = (p >= 0x8000) ? (0x10000UL - p) : p;   // 对称折叠到 0..0x8000
+    uint32_t q = (p >= 0x8000) ? (0x10000UL - p) : p;
     uint32_t idx = q >> 9, frac = q & 0x1FF;
-    uint32_t y = fx_lg_cos_tbl[idx];
+    uint32_t y = fx_cos_tbl[idx];
 
     if(idx < 64)
-        y += ((fx_lg_cos_tbl[idx+1] - y) * frac) >> 9;
+        y += ((fx_cos_tbl[idx+1] - y) * frac) >> 9;
     return (uint16_t)y;
 }
 
-/* 全彩颜色序列: RGB 位掩码 1..7 = 红 绿 黄 蓝 紫 青 白 */
-static uint8_t fx_lg_mask(uint32_t n)
+/* 正弦: 返回 -32767..32767 */
+static int32_t fx_sin16(uint16_t p)
 {
-    return (uint8_t)(1 + (n % iFX_LG_COLORS));
+    return 32767 - (int32_t)fx_wave((uint16_t)(p - 16384));
 }
 
-static void fx_liuguang(void)
+/* 单次凸包: x 落在 [start, start+width) 内时返回 0..65535..0, 否则 0 */
+static uint16_t fx_bump(uint16_t x, uint16_t start, uint16_t width)
 {
-    uint32_t dt, b, wa, wb, cyc, ch;
-    int32_t  p32;
-    uint16_t p;
-    uint8_t  k, c, ma, mb, phys;
-    static const uint8_t bit[3] = {iPWM_R, iPWM_G, iPWM_B};
-    static const uint8_t idx[3] = {iR_INDEX, iG_INDEX, iB_INDEX};
+    uint16_t d = (uint16_t)(x - start);
+    if(d >= width)
+        return 0;
+    return fx_wave((uint16_t)(((uint32_t)d << 16) / width));
+}
 
-    dt = led_now_rtc - fx_lg_rtc;
-    fx_lg_rtc = led_now_rtc;
-    if(dt > 65536)
-        dt = 65536;                                     // 休眠唤醒等长间隔: 最多前进 2s
-    fx_lg_acc += dt * fx_lg_inc[fx_spd()];
-    fx_lg_cyc += fx_lg_acc >> 24;
-    fx_lg_acc &= 0xFFFFFF;
+/* 缓动: t 0..256 */
+static uint16_t fx_ease_out(uint16_t t)
+{
+    uint32_t u = 256 - t;
+    return (uint16_t)(256 - ((u * u) >> 8));
+}
+static uint16_t fx_ease_in(uint16_t t)
+{
+    return (uint16_t)(((uint32_t)t * t) >> 8);
+}
+static uint16_t fx_ease_io(uint16_t t)
+{
+    return (uint16_t)(fx_wave((uint16_t)(t << 7)) >> 8);
+}
+
+//=============================================================================;
+// 颜色                                                                         ;
+//=============================================================================;
+
+static void fx_lerp_stops(const uint8_t *a, const uint8_t *b, uint16_t f, fx_rgb_t *c)
+{
+    uint32_t r = (uint32_t)a[0] * (256 - f) + (uint32_t)b[0] * f;  // 0..65280
+    uint32_t g = (uint32_t)a[1] * (256 - f) + (uint32_t)b[1] * f;
+    uint32_t bl= (uint32_t)a[2] * (256 - f) + (uint32_t)b[2] * f;
+    c->r = (uint16_t)((r  >> 4) + (r  >> 12));          // 0..4095
+    c->g = (uint16_t)((g  >> 4) + (g  >> 12));
+    c->b = (uint16_t)((bl >> 4) + (bl >> 12));
+}
+
+/* 当前主题色板取色, pos 0..65535 循环 */
+static void fx_pal(uint16_t pos, fx_rgb_t *c)
+{
+    const uint8_t (*p)[3] = fx_theme[fx_theme_idx()];
+    uint32_t x = (uint32_t)pos * iFX_THEME_STOPS;
+    uint8_t  s = (uint8_t)(x >> 16);
+    uint8_t  n = (uint8_t)((s + 1 >= iFX_THEME_STOPS) ? 0 : s + 1);
+
+    fx_lerp_stops(p[s], p[n], (uint16_t)((x >> 8) & 0xFF), c);
+}
+
+static uint16_t fx_main(void)
+{
+    return fx_theme_main[fx_theme_idx()];
+}
+
+/* 向白色混合, amt 0..256 */
+static void fx_white(fx_rgb_t *c, uint16_t amt)
+{
+    if(amt > 256)
+        amt = 256;
+    c->r = (uint16_t)(c->r + (((uint32_t)(iLED_HR_MAX - c->r) * amt) >> 8));
+    c->g = (uint16_t)(c->g + (((uint32_t)(iLED_HR_MAX - c->g) * amt) >> 8));
+    c->b = (uint16_t)(c->b + (((uint32_t)(iLED_HR_MAX - c->b) * amt) >> 8));
+}
+
+static void fx_mix(const fx_rgb_t *a, const fx_rgb_t *b, uint16_t t, fx_rgb_t *c)
+{
+    c->r = (uint16_t)(((uint32_t)a->r * (256 - t) + (uint32_t)b->r * t) >> 8);
+    c->g = (uint16_t)(((uint32_t)a->g * (256 - t) + (uint32_t)b->g * t) >> 8);
+    c->b = (uint16_t)(((uint32_t)a->b * (256 - t) + (uint32_t)b->b * t) >> 8);
+}
+
+//=============================================================================;
+// 画布                                                                         ;
+//=============================================================================;
+
+/* 写一颗灯: 颜色 * lev(0..4096) */
+static void fx_set(uint8_t k, const fx_rgb_t *c, uint16_t lev)
+{
+    fx_cv[k][0] = (uint16_t)(((uint32_t)c->r * lev) >> 12);
+    fx_cv[k][1] = (uint16_t)(((uint32_t)c->g * lev) >> 12);
+    fx_cv[k][2] = (uint16_t)(((uint32_t)c->b * lev) >> 12);
+}
+
+/* 叠加到指定缓冲 (不在此处截断, 提交时统一截断) */
+static void fx_add_to(uint16_t (*buf)[3], uint8_t k, const fx_rgb_t *c, uint16_t lev)
+{
+    uint32_t v;
+    v = buf[k][0] + (((uint32_t)c->r * lev) >> 12); buf[k][0] = (uint16_t)((v > 0xFFFF) ? 0xFFFF : v);
+    v = buf[k][1] + (((uint32_t)c->g * lev) >> 12); buf[k][1] = (uint16_t)((v > 0xFFFF) ? 0xFFFF : v);
+    v = buf[k][2] + (((uint32_t)c->b * lev) >> 12); buf[k][2] = (uint16_t)((v > 0xFFFF) ? 0xFFFF : v);
+}
+
+/* 在亚像素位置 x(8.8) 画一个半径 r(8.8) 的柔边光点, 叠加到 buf */
+static void fx_splat(uint16_t (*buf)[3], int32_t x, uint16_t r, const fx_rgb_t *c, uint16_t lev)
+{
+    uint8_t  k;
+    uint32_t d, t, u, f;
 
     for(k=0; k<iLED_MAX; k++)
     {
-        // 第 k 颗灯滞后 1/4 周期 -> 波向序号增大方向流动
-        p32 = (int32_t)(fx_lg_acc >> 8) - (int32_t)k * 16384;
-        cyc = fx_lg_cyc + (uint32_t)(p32 >> 16);        // p32 为负时借位 (算术右移)
-        p   = (uint16_t)(p32 & 0xFFFF);
+        d = fx_abs16((int32_t)k * 256 - x);
+        if(d >= r)
+            continue;
+        t = (d << 8) / r;                               // 0..255
+        u = 256 - ((t * t) >> 8);                       // 1 - t^2
+        f = (u * u) >> 4;                               // (1 - t^2)^2, 0..4096
+        fx_add_to(buf, k, c, (uint16_t)((f * lev) >> 12));
+    }
+}
 
-        b = iFX_LG_FLOOR + (((uint32_t)(iLED_HR_MAX - iFX_LG_FLOOR) * fx_lg_wave(p)) >> 16);
+/* 画布整体衰减 (拖尾), keep 0..256 */
+static void fx_cv_keep(uint16_t keep)
+{
+    uint8_t i;
+    uint16_t *p = &fx_cv[0][0];
+    for(i=0; i<iLED_MAX*3; i++)
+        p[i] = (uint16_t)(((uint32_t)p[i] * keep) >> 8);
+}
 
-        if(fx_multi())
-        {
-            // 波谷附近从上一个颜色渐变到下一个颜色, 颜色序列各灯错开 1 位
-            if(p < iFX_LG_XFADE)
-            {
-                ma = fx_lg_mask(cyc + k - 1);
-                mb = fx_lg_mask(cyc + k);
-                wb = 32768 + ((uint32_t)p * 32768) / iFX_LG_XFADE;
-            }
-            else if(p > (0x10000 - iFX_LG_XFADE))
-            {
-                ma = fx_lg_mask(cyc + k);
-                mb = fx_lg_mask(cyc + k + 1);
-                wb = ((uint32_t)(p - (0x10000 - iFX_LG_XFADE)) * 32768) / iFX_LG_XFADE;
-            }
-            else
-            {
-                ma = mb = fx_lg_mask(cyc + k);
-                wb = 0;
-            }
-        }
-        else
-        {
-            ma = mb = rgb_en_tbl[led_rgb_index & 0x0F];
-            wb = 0;
-        }
-        wa = 65536 - wb;
+/* 本帧内容与拖尾合成: 取较亮者 */
+static void fx_merge_max(void)
+{
+    uint8_t i;
+    uint16_t *p = &fx_cv[0][0], *q = &fx_tmp[0][0];
+    for(i=0; i<iLED_MAX*3; i++)
+    {
+        if(q[i] > p[i])
+            p[i] = q[i];
+        q[i] = 0;
+    }
+}
 
+static void fx_tmp_to_cv(void)
+{
+    memcpy(fx_cv, fx_tmp, sizeof(fx_cv));
+    memset(fx_tmp, 0, sizeof(fx_tmp));
+}
+
+/* 画布 -> 输出缓冲: 方向镜像 + 交叉渐变 + 截断 */
+static void fx_commit(void)
+{
+    static const uint8_t ch[3] = {iR_INDEX, iG_INDEX, iB_INDEX};
+    uint8_t  k, c, phys;
+    uint32_t v;
+
+    for(k=0; k<iLED_MAX; k++)
+    {
         phys = bled_run_dir ? (uint8_t)(iLED_MAX - 1 - k) : k;
         for(c=0; c<3; c++)
         {
-            ch = ((ma & bit[c]) ? wa : 0) + ((mb & bit[c]) ? wb : 0);    // 0..65536
-            pwm_rgb_hr[phys][idx[c]] = (uint16_t)((b * ch) >> 16);
-            pwm_rgb_tbl[phys][idx[c]] = (uint8_t)(pwm_rgb_hr[phys][idx[c]] >> 6);
+            v = fx_cv[k][c];
+            if(v > iLED_HR_MAX)
+                v = iLED_HR_MAX;
+            if(fx_xf)
+                v = (v * (256 - fx_xf) + (uint32_t)fx_xf_from[phys][ch[c]] * fx_xf) >> 8;
+            pwm_rgb_hr[phys][ch[c]] = (uint16_t)v;
+            pwm_rgb_tbl[phys][ch[c]] = (uint8_t)(v >> 6);
         }
     }
+    fx_xf = (fx_xf > iFX_XFADE_STEP) ? (uint16_t)(fx_xf - iFX_XFADE_STEP) : 0;
     bled_hr_frame = true;
 }
 
-/******************************************************************************
-* 激光 (按键响应): 按到哪颗灯亮哪颗, 并向两侧轻微扩散后渐隐
-*   全彩: 颜色随位置变化 (左→右彩虹)
-******************************************************************************/
-static const uint8_t            fx_jg_shift[5] = {4, 5, 5, 6, 6};   // 衰减速度
-
-static void fx_jiguang(void)
+/* 从当前显示的画面开始交叉渐变 */
+static void fx_xfade_begin(void)
 {
-    uint8_t p, k, rgb[3];
+    if(bled_hr_frame)
+        memcpy(fx_xf_from, pwm_rgb_hr, sizeof(fx_xf_from));
+    else
+        memset(fx_xf_from, 0, sizeof(fx_xf_from));
+    fx_xf = 256;
+}
 
+//=============================================================================;
+// 灯效                                                                         ;
+//=============================================================================;
+
+/******************************************************************************
+* 开机动画: 中心一点白光 -> 主题色从中心向两侧绽放 -> 一道光泽扫过 -> 渐变进入当前灯效
+******************************************************************************/
+static void fx_intro_frame(void)
+{
+    uint16_t t = (uint16_t)(iFX_INTRO_FRAMES - fx_intro);
+    uint16_t u = (uint16_t)((t * 256U) / iFX_INTRO_FRAMES);
+    uint16_t g, r, d, f;
+    int32_t  x, e;
+    uint8_t  k;
+    fx_rgb_t c, w = {iLED_HR_MAX, iLED_HR_MAX, iLED_HR_MAX};
+
+    g = (uint16_t)((u >= 140) ? 256 : ((u * 256U) / 140));
+    r = (uint16_t)((fx_ease_out(g) * 1180U) >> 8);      // 半径 0 -> 4.6 颗灯
+    for(k=0; k<iLED_MAX; k++)
+    {
+        d = fx_abs16((int32_t)k * 256 - 896);
+        e = (int32_t)r - d + 150;
+        f = (uint16_t)((e <= 0) ? 0 : ((e >= 300) ? 4096 : (e * 4096) / 300));
+        fx_pal((uint16_t)(d * 20 + u * 80), &c);
+        fx_set(k, &c, f);
+    }
+    if(u < 64)
+        fx_splat(fx_cv, 896, 420, &w, (uint16_t)((64 - u) * (64 - u)));
+    if((u >= 140) && (u < 230))
+    {
+        x = -512 + ((int32_t)(u - 140) * 2816) / 90;
+        for(k=0; k<iLED_MAX; k++)
+        {
+            d = fx_abs16((int32_t)k * 256 - x);
+            if(d < 384)
+            {
+                f = (uint16_t)(((384 - d) * 72U) / 384);
+                fx_rgb_t p = {fx_cv[k][0], fx_cv[k][1], fx_cv[k][2]};
+                fx_white(&p, f);
+                fx_cv[k][0] = p.r; fx_cv[k][1] = p.g; fx_cv[k][2] = p.b;
+            }
+        }
+    }
+
+    if(0 == --fx_intro)
+    {                                                   // 动画结束: 渐变进入灯效
+        fx_commit();
+        fx_xfade_begin();
+    }
+}
+
+/******************************************************************************
+* 1 釉光渐变: 静态主题渐变 (适合拍照), 每隔数秒一道淡淡的光泽从左到右扫过,
+*             像釉面反光. 速度档位决定光泽出现的间隔.
+******************************************************************************/
+static void fx_glaze(void)
+{
+    uint8_t  k;
+    uint16_t d, f, sweep = 200;
+    int32_t  x;
+    fx_rgb_t c;
+
+    for(k=0; k<iLED_MAX; k++)
+    {
+        fx_pal((uint16_t)(fx_main() - 17500 + k * 5000), &c);
+        if(fx_t < sweep)
+        {
+            x = -512 + ((int32_t)fx_t * 2816) / sweep;
+            d = fx_abs16((int32_t)k * 256 - x);
+            if(d < 420)
+            {
+                f = (uint16_t)(((uint32_t)(420 - d) * 80) / 420);
+                fx_white(&c, (uint16_t)((fx_ease_io((uint16_t)((f * 256U) / 80)) * 80U) >> 8));
+            }
+        }
+        fx_set(k, &c, 4096);
+    }
+    if(++fx_t >= fx_dur(1024))                         // 约 8 秒一次
+        fx_t = 0;
+}
+
+/******************************************************************************
+* 2 潮汐呼吸: 中心先亮, 两侧随后, 像潮水涨落; 颜色随呼吸沿色板缓慢漂移.
+*             最低保留 ~14% 亮度. 周期约 5 秒 (默认速度)
+******************************************************************************/
+static void fx_tide(void)
+{
+    uint8_t  k;
+    uint16_t w, lev;
+    fx_rgb_t c;
+
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(100));
+    fx_col   = (uint16_t)(fx_col + fx_k(6));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        w = fx_wave((uint16_t)(fx_ph[0] - fx_abs16(2 * k - 7) * 1300));
+        lev = (uint16_t)(580 + (((uint32_t)(w >> 4) * (4096 - 580)) >> 12));
+        fx_pal((uint16_t)(fx_col + k * 2200), &c);
+        fx_set(k, &c, lev);
+    }
+}
+
+/******************************************************************************
+* 3 双星: 两颗主题对比色的光点相向摆动、穿过彼此, 交汇处颜色叠加混色, 带短拖尾
+******************************************************************************/
+static void fx_twin(void)
+{
+    int32_t  s, x;
+    fx_rgb_t a, b;
+
+    fx_cv_keep(236);
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(170));
+    fx_col   = (uint16_t)(fx_col + fx_k(8));
+    s = fx_sin16(fx_ph[0]);
+    x = (s * 950) >> 15;
+    fx_pal(fx_col, &a);
+    fx_pal((uint16_t)(fx_col + 32768), &b);
+    fx_splat(fx_tmp, 896 + x, 330, &a, 4096);
+    fx_splat(fx_tmp, 896 - x, 330, &b, 4096);
+    fx_merge_max();
+}
+
+/******************************************************************************
+* 4 渐变流转: 整条灯带同时沿色板缓慢变色, 中心领先、两侧稍滞后, 边缘略暗增加纵深.
+*             默认约 13 秒走完一圈色板
+******************************************************************************/
+static void fx_shift(void)
+{
+    uint8_t  k, d;
+    fx_rgb_t c;
+
+    fx_col = (uint16_t)(fx_col + fx_k(40));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        d = (uint8_t)fx_abs16(2 * k - 7);
+        fx_pal((uint16_t)(fx_col - d * 900), &c);
+        fx_set(k, &c, (uint16_t)(4096 - d * 110));
+    }
+}
+
+/******************************************************************************
+* 5 流光: 亮度波沿灯带流动 (波长 4 颗灯), 颜色沿色板连续变化;
+*         升余弦波形 + ~12% 底光, 无台阶无闪断. 默认一个波周期 2 秒
+******************************************************************************/
+static void fx_flow(void)
+{
+    uint8_t  k;
+    uint16_t w, lev;
+    fx_rgb_t c;
+
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(256));
+    fx_col   = (uint16_t)(fx_col + fx_k(12));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        w = fx_wave((uint16_t)(fx_ph[0] - k * 16384));
+        lev = (uint16_t)(492 + (((uint32_t)(w >> 4) * (4096 - 492)) >> 12));
+        fx_pal((uint16_t)(fx_col - k * 6000), &c);
+        fx_set(k, &c, lev);
+    }
+}
+
+/******************************************************************************
+* 6 星屑: 暗色主题渐变打底, 星点随机浮现 (快亮慢灭), 部分星点带白色高光
+******************************************************************************/
+static void fx_stardust(void)
+{
+    uint8_t  k;
+    uint16_t ph, prev, e, t;
+    fx_rgb_t bg, s;
+
+    fx_col = (uint16_t)(fx_col + fx_k(4));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        fx_pal((uint16_t)(fx_col + k * 4000), &bg);
+        fx_set(k, &bg, 260);
+
+        ph = fx_a[k];
+        if(0 == ph)
+        {
+            if(fx_rand8() < fx_k(3))
+            {
+                fx_a[k] = 1;
+                fx_c[k] = fx_rand8();
+                fx_b[k] = (uint16_t)(2400 + fx_rand8() * 6);
+                if(fx_rand8() < 70)
+                    fx_b[k] |= 0x8000;                  // 白色高光星
+            }
+            continue;
+        }
+        prev = ph;
+        ph = (uint16_t)(ph + fx_k(420));
+        if(ph < prev)
+        {
+            fx_a[k] = 0;
+            continue;
+        }
+        fx_a[k] = ph;
+
+        if(ph < 10000)
+            t = (uint16_t)(((uint32_t)ph << 8) / 10000);                // 快速点亮
+        else
+            t = (uint16_t)(((uint32_t)(65535 - ph) << 8) / 55535);      // 缓慢熄灭
+        e = (uint16_t)(((uint32_t)t * t) >> 4);                         // 0..4096
+
+        fx_pal((uint16_t)(fx_c[k] << 8), &s);
+        if(fx_b[k] & 0x8000)
+            fx_white(&s, 150);
+        fx_add_to(fx_cv, k, &s, (uint16_t)(((uint32_t)e * (fx_b[k] & 0x0FFF)) >> 12));
+    }
+}
+
+/******************************************************************************
+* 7 波光: 两路不同速度的波相互干涉, 平方后形成水面焦散般的亮斑, 亮斑处泛白光
+******************************************************************************/
+static void fx_water(void)
+{
+    uint8_t  k;
+    uint16_t w1, w2, s, q, gl;
+    fx_rgb_t c;
+
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(150));
+    fx_ph[1] = (uint16_t)(fx_ph[1] + fx_k(97));
+    fx_col   = (uint16_t)(fx_col + fx_k(5));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        w1 = fx_wave((uint16_t)(fx_ph[0] + k * 9000));
+        w2 = fx_wave((uint16_t)(fx_ph[1] - k * 14000 + 20000));
+        s  = (uint16_t)(((uint32_t)w1 + w2) >> 9);                      // 0..255
+        q  = (uint16_t)((s * s) >> 8);
+        gl = (uint16_t)((((q * q) >> 8) * q) >> 8);
+        fx_pal((uint16_t)(fx_col + (w1 >> 3)), &c);
+        fx_white(&c, (uint16_t)((gl * 110U) >> 8));
+        fx_set(k, &c, (uint16_t)(900 + ((q * 3196U) >> 8)));
+    }
+}
+
+/******************************************************************************
+* 8 心跳: "扑通-扑通" 双脉冲 (约 66 次/分), 从中心向两侧传开; 峰值处颜色更暖更亮.
+*         取代原"爆闪": 节奏感强但不刺眼
+******************************************************************************/
+static void fx_heart(void)
+{
+    uint8_t  k;
+    uint16_t tt, e1, e2, e;
+    fx_rgb_t c;
+
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(560));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        tt = (uint16_t)(fx_ph[0] - fx_abs16(2 * k - 7) * 700);
+        e1 = fx_bump(tt, 0, 9500);
+        e2 = (uint16_t)(((uint32_t)fx_bump(tt, 12500, 9500) * 160) >> 8);
+        e  = (e1 > e2) ? e1 : e2;
+        fx_pal((uint16_t)(fx_main() + (e >> 4)), &c);
+        fx_white(&c, (uint16_t)(e >> 11));
+        fx_set(k, &c, (uint16_t)(330 + (((uint32_t)(e >> 4) * (4096 - 330)) >> 12)));
+    }
+}
+
+/******************************************************************************
+* 9 霓虹灯牌: 灯带分成 3 段"灯管", 依次闪烁点亮 (像霓虹灯通电), 之后稳定发光
+*             带轻微电流嗡鸣感; 每隔几秒随机一段灯管接触不良般地闪几下
+******************************************************************************/
+static const uint8_t            fx_neon_tube[iLED_MAX] = {0, 0, 0, 1, 1, 2, 2, 2};
+static const uint8_t            fx_neon_end[iLED_MAX]  = {1, 0, 1, 1, 1, 1, 0, 1};
+
+static void fx_neon(void)
+{
+    uint8_t  t, k;
+    uint16_t tg, lev;
+    fx_rgb_t c;
+
+    // fx_c[t]: 0 等待 1 点火中 2 常亮 3 故障闪烁; fx_b[t]: 计时; fx_a[t]: 目标; fx_a[t+3]: 显示
+    for(t=0; t<3; t++)
+    {
+        switch(fx_c[t])
+        {
+            case 0:
+                tg = 0;
+                if(0 == --fx_b[t]) { fx_c[t] = 1; fx_b[t] = 64; }
+                break;
+            case 1:
+                tg = fx_a[t];
+                if(0 == (fx_b[t] & 0x03))
+                    tg = (fx_rand8() < 150) ? 4096 : ((fx_rand8() < 128) ? 900 : 0);
+                if(0 == --fx_b[t]) { fx_c[t] = 2; tg = 4096; }
+                break;
+            case 3:
+                tg = fx_a[t];
+                if(0 == (fx_b[t] & 0x03))
+                    tg = (fx_rand8() < 128) ? 4096 : 1300;
+                if(0 == --fx_b[t]) { fx_c[t] = 2; tg = 4096; }
+                break;
+            default:
+                tg = (uint16_t)(3950 + (fx_rand8() & 0x7F));            // 嗡鸣
+                break;
+        }
+        fx_a[t] = tg;
+        fx_a[t+3] = (uint16_t)(fx_a[t+3] + ((int32_t)tg - fx_a[t+3]) / 2);
+    }
+
+    if((2 == fx_c[0]) && (2 == fx_c[1]) && (2 == fx_c[2]) && (0 == --fx_t))
+    {
+        t = (uint8_t)(fx_rand8() % 3);
+        fx_c[t] = 3;
+        fx_b[t] = (uint16_t)(18 + (fx_rand8() & 0x1F));
+        fx_t = (uint16_t)(fx_dur(640) + fx_rand8() * 3);
+    }
+
+    for(k=0; k<iLED_MAX; k++)
+    {
+        t = fx_neon_tube[k];
+        fx_pal((uint16_t)(fx_main() + t * 21845), &c);
+        lev = fx_a[t+3];
+        if(fx_neon_end[k])
+            lev = (uint16_t)((lev * 218U) >> 8);                       // 灯管两端略暗
+        fx_set(k, &c, lev);
+    }
+}
+
+/******************************************************************************
+* 10 钟摆: 单个光点做简谐摆动, 颜色随位置变化, 长拖尾划出一道渐变弧光
+******************************************************************************/
+static void fx_pendulum(void)
+{
+    int32_t  x;
+    fx_rgb_t c;
+
+    fx_cv_keep(247);
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(150));
+    fx_col   = (uint16_t)(fx_col + fx_k(5));
+    x = 896 + ((fx_sin16(fx_ph[0]) * 920) >> 15);
+    fx_pal((uint16_t)(fx_col + x * 12), &c);
+    fx_splat(fx_tmp, x, 300, &c, 4096);
+    fx_merge_max();
+}
+
+/******************************************************************************
+* 11 流星雨: 最多 3 颗流星随机出发, 速度/亮度/颜色各不相同, 头部白热, 尾部渐隐
+******************************************************************************/
+static void fx_shower(void)
+{
+    uint8_t  i;
+    fx_pt_t  *p;
+    fx_rgb_t c;
+
+    fx_cv_keep(228);
+    for(i=0; i<iFX_PT_NUM; i++)
+    {
+        p = &fx_pt[i];
+        if(!p->a)
+        {
+            if(fx_rand8() < fx_k(3))
+            {
+                p->a = 1;
+                p->x = -300;
+                p->v = (int16_t)(((uint32_t)fx_k(22) * (160 + (fx_rand8() >> 1) + (fx_rand8() >> 2))) >> 8);
+                if(p->v < 4)
+                    p->v = 4;
+                p->c = fx_rand8();
+                p->t = (uint16_t)(2600 + fx_rand8() * 5);
+            }
+            continue;
+        }
+        p->x = (int16_t)(p->x + p->v);
+        if(p->x > (iLED_MAX * 256 + 300))
+            p->a = 0;
+        fx_pal((uint16_t)(p->c << 8), &c);
+        fx_white(&c, 110);
+        fx_splat(fx_tmp, p->x, 220, &c, p->t);
+    }
+    fx_merge_max();
+}
+
+/******************************************************************************
+* 12 对撞: 两颗对比色光点从两端加速冲向中心, 相撞瞬间白光一闪,
+*          混合色光环向两侧炸开后消散, 下一轮换一组颜色
+******************************************************************************/
+static void fx_collide(void)
+{
+    uint16_t T, t, r, d, diff, lev;
+    int32_t  x;
+    uint8_t  k;
+    fx_rgb_t a, b, m, w = {iLED_HR_MAX, iLED_HR_MAX, iLED_HR_MAX};
+
+    fx_pal(fx_col, &a);
+    fx_pal((uint16_t)(fx_col + 32768), &b);
+    fx_cv_keep((2 == fx_state) ? 232 : 225);
+    fx_t++;
+
+    if(0 == fx_state)
+    {
+        T = fx_dur(110);
+        t = (uint16_t)(((uint32_t)fx_t << 8) / T);
+        x = -256 + (((int32_t)fx_ease_in(t) * 1152) >> 8);
+        fx_splat(fx_tmp, x, 300, &a, 4096);
+        fx_splat(fx_tmp, 1792 - x, 300, &b, 4096);
+        if(fx_t >= T) { fx_state = 1; fx_t = 0; }
+    }
+    else if(1 == fx_state)
+    {
+        T = fx_dur(70);
+        t = (uint16_t)(((uint32_t)fx_t << 8) / T);
+        if(t > 256)
+            t = 256;
+        r = (uint16_t)((fx_ease_out(t) * 1180U) >> 8);
+        lev = (uint16_t)((256 - t) * 16);
+        fx_mix(&a, &b, 128, &m);
+        fx_white(&m, (uint16_t)((256 - t) >> 2));
+        for(k=0; k<iLED_MAX; k++)
+        {
+            d = fx_abs16((int32_t)k * 256 - 896);
+            diff = fx_abs16((int32_t)d - r);
+            if(diff < 420)
+                fx_add_to(fx_tmp, k, &m, (uint16_t)(((uint32_t)(420 - diff) * lev) / 420));
+        }
+        if(t < 90)
+            fx_splat(fx_tmp, 896, 420, &w, (uint16_t)(((90 - t) * (90 - t) * 4096U) / 8100));
+        if(fx_t >= T) { fx_state = 2; fx_t = 0; }
+    }
+    else
+    {
+        if(fx_t >= fx_dur(60))
+        {
+            fx_state = 0;
+            fx_t = 0;
+            fx_col = (uint16_t)(fx_col + iFX_STOP);
+        }
+    }
+    fx_merge_max();
+}
+
+/******************************************************************************
+* 13 绽放: 光从中心向两侧舒展开 (中心主色, 边缘渐变到相邻色), 停留片刻
+*          轻轻摇曳, 再从两端向中心收拢; 每一轮换下一组颜色
+******************************************************************************/
+static void fx_bloom(void)
+{
+    static const uint16_t dur[4] = {100, 70, 90, 30};
+    uint16_t T, t, R = 0, d, f, sh;
+    int32_t  e;
+    uint8_t  k;
+    fx_rgb_t c;
+
+    T = fx_dur(dur[fx_state & 3]);
+    t = (uint16_t)(((uint32_t)fx_t << 8) / T);
+    if(t > 256)
+        t = 256;
+    switch(fx_state)
+    {
+        case 0:  R = (uint16_t)((fx_ease_out(t) * 1130U) >> 8);         break;
+        case 1:  R = 1130;                                             break;
+        case 2:  R = (uint16_t)(((256 - fx_ease_in(t)) * 1130U) >> 8); break;
+        default: R = 0;                                                break;
+    }
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(180));
+
+    for(k=0; k<iLED_MAX; k++)
+    {
+        d = fx_abs16((int32_t)k * 256 - 896);
+        e = (int32_t)R - d + 150;
+        f = (uint16_t)((e <= 0) ? 0 : ((e >= 300) ? 4096 : (e * 4096) / 300));
+        if(1 == fx_state)
+        {
+            sh = fx_wave((uint16_t)(fx_ph[0] + k * 8000));
+            f = (uint16_t)((f * (3700U + (sh >> 7))) >> 12);           // 摇曳 ±5%
+        }
+        fx_pal((uint16_t)(fx_col + d * 14), &c);
+        fx_white(&c, (uint16_t)((896 - d) >> 4));                     // 花心略亮
+        fx_set(k, &c, f);
+    }
+
+    if(++fx_t >= T)
+    {
+        fx_t = 0;
+        fx_state = (uint8_t)((fx_state + 1) & 3);
+        if(0 == fx_state)
+            fx_col = (uint16_t)(fx_col + 9000);
+    }
+}
+
+/******************************************************************************
+* 14 幕布: 新颜色像幕布一样从一侧滑入覆盖旧颜色, 幕布边缘带一道高光;
+*          停留后换下一色, 方向左右交替
+******************************************************************************/
+static void fx_curtain(void)
+{
+    uint16_t T, t, cov, edge;
+    int32_t  x, u;
+    uint8_t  k, kk;
+    fx_rgb_t a, b, c;
+
+    fx_pal(fx_col, &a);
+    fx_pal((uint16_t)(fx_col + iFX_STOP), &b);
+
+    if(0 == fx_state)
+    {
+        T = fx_dur(110);
+        t = (uint16_t)(((uint32_t)fx_t << 8) / T);
+        if(t > 256)
+            t = 256;
+        x = -400 + (((int32_t)fx_ease_io(t) * 2592) >> 8);
+        for(k=0; k<iLED_MAX; k++)
+        {
+            kk = fx_c[0] ? (uint8_t)(iLED_MAX - 1 - k) : k;
+            u = x - (int32_t)kk * 256;
+            cov  = (uint16_t)((u >= 400) ? 256 : ((u <= -400) ? 0 : ((u + 400) * 256) / 800));
+            edge = (uint16_t)((fx_abs16(u) < 300) ? ((300 - fx_abs16(u)) * 70U) / 300 : 0);
+            fx_mix(&a, &b, fx_ease_io(cov), &c);
+            fx_white(&c, edge);
+            fx_set(k, &c, 4096);
+        }
+        if(++fx_t >= T) { fx_state = 1; fx_t = 0; }
+    }
+    else
+    {
+        for(k=0; k<iLED_MAX; k++)
+            fx_set(k, &b, 4096);
+        if(++fx_t >= fx_dur(150))
+        {
+            fx_state = 0;
+            fx_t = 0;
+            fx_col = (uint16_t)(fx_col + iFX_STOP);
+            fx_c[0] ^= 1;
+        }
+    }
+}
+
+/******************************************************************************
+* 15 余晖 (按键响应): 按键位置的灯被"烧"成白热, 随后像金属冷却一样沿色板
+*                    变色并慢慢暗下去; 平时保留 ~5% 主题底光
+******************************************************************************/
+static void fx_afterglow(void)
+{
+    uint8_t  p, k;
+    uint16_t h, d;
+    fx_rgb_t bg, c;
+
+    fx_col = (uint16_t)(fx_col + fx_k(3));
     while(fx_key_pop(&p))
     {
         if(iLED_POS_NONE == p)
         {
-            fx_lv[iLED_MAX/2 - 1] = 256;
-            fx_lv[iLED_MAX/2] = 256;
+            fx_a[iLED_MAX/2 - 1] = 4096;
+            fx_a[iLED_MAX/2] = 4096;
             continue;
         }
-        fx_lv[p] = 256;
-        if((p > 0) && (fx_lv[p-1] < 128))
-            fx_lv[p-1] = 128;
-        if((p < iLED_MAX-1) && (fx_lv[p+1] < 128))
-            fx_lv[p+1] = 128;
+        fx_a[p] = 4096;
+        if((p > 0) && (fx_a[p-1] < 2200))
+            fx_a[p-1] = 2200;
+        if((p < iLED_MAX - 1) && (fx_a[p+1] < 2200))
+            fx_a[p+1] = 2200;
     }
 
     for(k=0; k<iLED_MAX; k++)
     {
-        fx_color((uint8_t)(k * 32), 255, rgb);
-        fx_put(k, rgb, fx_lv[k]);
-        if(fx_lv[k])
-        {
-            uint16_t d = (uint16_t)((fx_lv[k] >> fx_jg_shift[fx_spd()]) + 1);
-            fx_lv[k] = (fx_lv[k] > d) ? (uint16_t)(fx_lv[k] - d) : 0;
-        }
+        fx_pal((uint16_t)(fx_col + k * 4000), &bg);
+        fx_set(k, &bg, 200);
+        h = fx_a[k];
+        if(0 == h)
+            continue;
+        fx_pal((uint16_t)(fx_main() + (4096 - h) * 5), &c);
+        if(h > 2800)
+            fx_white(&c, (uint16_t)((h - 2800) >> 3));
+        fx_add_to(fx_cv, k, &c, h);
+        d = (uint16_t)((((uint32_t)h * fx_k(4)) >> 8) + 1);
+        fx_a[k] = (h > d) ? (uint16_t)(h - d) : 0;
     }
 }
 
 /******************************************************************************
-* 办公柔光: 静态单色 (白=暖白)
-*   全彩: 粉彩渐变, 以几十秒~数分钟一圈的速度极慢流动, 几乎察觉不到变化
+* 16 柔光: 主题主色纯色常亮 (月光主题即暖白); 幻彩主题为粉彩渐变,
+*          以几十秒到数分钟一圈的速度极慢流动
 ******************************************************************************/
 static const uint8_t            fx_soft_div[5] = {24, 48, 96, 160, 240};
 
-static void fx_soft_on(void)
+static void fx_soft(void)
 {
-    uint8_t k, rgb[3];
+    uint8_t  k;
+    fx_rgb_t c;
 
-    if(!fx_multi())
+    if(iFX_THEME_SPECTRUM != fx_theme_idx())
     {
+        fx_pal(fx_main(), &c);
         for(k=0; k<iLED_MAX; k++)
-            fx_put(k, fx_pal(), 256);
+            fx_set(k, &c, 4096);
         return;
     }
-
-    if(++fx_cnt >= fx_soft_div[fx_spd()])
+    if(++fx_t >= fx_soft_div[fx_spd()])
     {
-        fx_cnt = 0;
-        fx_ph1++;
+        fx_t = 0;
+        fx_col = (uint16_t)(fx_col + 256);
     }
     for(k=0; k<iLED_MAX; k++)
     {
-        fx_hsv((uint8_t)(fx_ph1 + k * 20), 150, iPWM_MAX, rgb);
-        fx_put(fx_idx(k), rgb, 256);
+        fx_pal((uint16_t)(fx_col + k * 5000), &c);
+        fx_white(&c, 110);
+        fx_set(k, &c, 4096);
     }
 }
 
 /******************************************************************************
-* 柔和呼吸: 正弦曲线, 最暗 ~22% 不熄灭; 周期 3 / 4.5 / 6 / 8 / 10 秒
-*   全彩: 每次呼吸到最暗时换一个颜色
+* 17 熔岩灯: 3 团大小会呼吸的光团以不同的慢周期漂移, 相遇时颜色融合 (保持色相);
+*            极慢, 适合当作桌面氛围灯
 ******************************************************************************/
-static const uint16_t           fx_breath_inc[5] = {171, 114, 85, 64, 51};
-#define iFX_BREATH_FLOOR        56
+static const uint8_t            fx_lava_i1[3] = {43, 31, 23};
+static const uint8_t            fx_lava_i2[3] = {71, 53, 37};
 
-static void fx_soft_breath(void)
+static void fx_lava(void)
 {
-    uint16_t prev = fx_ph1;
-    uint16_t lev;
-    uint8_t  k, rgb[3];
+    uint8_t  i, k;
+    int32_t  x;
+    uint16_t r, m;
+    uint32_t s;
+    fx_rgb_t c;
 
-    fx_ph1 = (uint16_t)(fx_ph1 + fx_breath_inc[fx_spd()]);
-    if(fx_ph1 < prev)
-        fx_hue[0] = (uint8_t)(fx_hue[0] + 36);
-
-    lev = (uint16_t)(iFX_BREATH_FLOOR
-        + ((fx_sin8((uint8_t)((fx_ph1 >> 8) + 192)) * (256 - iFX_BREATH_FLOOR)) >> 8));
-
-    fx_color(fx_hue[0], 210, rgb);
-    for(k=0; k<iLED_MAX; k++)
-        fx_put(k, rgb, lev);
-}
-
-/******************************************************************************
-* 彩虹流动: 平滑 HSV 彩虹, 一圈 2 / 3.5 / 5 / 8 / 12 秒
-*   单色: 同色亮度波沿灯条流动
-******************************************************************************/
-static const uint16_t           fx_rainbow_inc[5] = {256, 146, 102, 64, 43};
-
-static void fx_rainbow(void)
-{
-    uint8_t k, h0, rgb[3];
-
-    fx_ph1 = (uint16_t)(fx_ph1 + fx_rainbow_inc[fx_spd()]);
-    h0 = (uint8_t)(fx_ph1 >> 8);
-
+    fx_col = (uint16_t)(fx_col + fx_k(3));
+    for(i=0; i<3; i++)
+    {
+        fx_ph[i]    = (uint16_t)(fx_ph[i] + fx_k(fx_lava_i1[i]));
+        fx_pt[i].ph = (uint16_t)(fx_pt[i].ph + fx_k(fx_lava_i2[i]));
+        x = 896 + ((fx_sin16(fx_ph[i]) * 640) >> 15) + ((fx_sin16(fx_pt[i].ph) * 300) >> 15);
+        r = (uint16_t)(380 + (fx_wave((uint16_t)(fx_pt[i].ph * 2 + i * 20000)) >> 8));
+        fx_pal((uint16_t)(fx_col + i * 21845), &c);
+        fx_splat(fx_tmp, x, r, &c, 3600);
+    }
     for(k=0; k<iLED_MAX; k++)
     {
-        if(fx_multi())
-        {
-            fx_hsv((uint8_t)(h0 - k * 24), 255, iPWM_MAX, rgb);
-            fx_put(fx_idx(k), rgb, 256);
-        }
-        else
-        {
-            fx_put(fx_idx(k), fx_pal(),
-                (uint16_t)(64 + ((fx_sin8((uint8_t)(h0 - k * 40)) * 192) >> 8)));
+        fx_pal((uint16_t)(fx_col + k * 3000), &c);
+        fx_add_to(fx_tmp, k, &c, 230);
+        m = fx_tmp[k][0];
+        if(fx_tmp[k][1] > m) m = fx_tmp[k][1];
+        if(fx_tmp[k][2] > m) m = fx_tmp[k][2];
+        if(m > iLED_HR_MAX)
+        {                                               // 超出时等比压缩, 保持色相
+            s = ((uint32_t)iLED_HR_MAX << 12) / m;
+            fx_tmp[k][0] = (uint16_t)((fx_tmp[k][0] * s) >> 12);
+            fx_tmp[k][1] = (uint16_t)((fx_tmp[k][1] * s) >> 12);
+            fx_tmp[k][2] = (uint16_t)((fx_tmp[k][2] * s) >> 12);
         }
     }
+    fx_tmp_to_cv();
 }
 
 /******************************************************************************
-* 极光: 两路不同速度/方向的正弦波叠加形成"光幕", 第三路极慢的波让色调
-*       在 绿 -> 青 -> 蓝紫 之间漂移; 单色: 在所选颜色附近 ±色相 漂移
+* 18 色带流动: 完整的主题渐变色带沿灯带持续滚动, 默认约 4.5 秒一圈
 ******************************************************************************/
-static const uint8_t            fx_aurora_inc[5] = {96, 72, 52, 36, 26};
+static void fx_band(void)
+{
+    uint8_t  k;
+    fx_rgb_t c;
 
+    fx_col = (uint16_t)(fx_col + fx_k(110));
+    for(k=0; k<iLED_MAX; k++)
+    {
+        fx_pal((uint16_t)(fx_col - k * 5200), &c);
+        fx_set(k, &c, (uint16_t)(4096 - fx_abs16(2 * k - 7) * 60));
+    }
+}
+
+/******************************************************************************
+* 19 极光: 两路光幕叠加, 明暗与色彩在主题色板内缓慢起伏
+******************************************************************************/
 static void fx_aurora(void)
 {
-    uint8_t  k, w1, w2, hue, sat, base, rgb[3];
-    uint16_t inc = fx_aurora_inc[fx_spd()];
-    uint16_t lev;
+    uint8_t  k;
+    uint16_t w1, w2, m;
+    fx_rgb_t c;
 
-    fx_ph1 = (uint16_t)(fx_ph1 + inc);
-    fx_ph2 = (uint16_t)(fx_ph2 + ((inc * 3) / 5));
-    fx_ph3 = (uint16_t)(fx_ph3 + ((inc / 8) ? (inc / 8) : 1));
-
-    base = (uint8_t)(96 + ((fx_sin8((uint8_t)(fx_ph3 >> 8)) * 100) >> 8));
-
+    fx_ph[0] = (uint16_t)(fx_ph[0] + fx_k(62));
+    fx_ph[1] = (uint16_t)(fx_ph[1] + fx_k(37));
+    fx_col   = (uint16_t)(fx_col + fx_k(4));
     for(k=0; k<iLED_MAX; k++)
     {
-        w1 = fx_sin8((uint8_t)((fx_ph1 >> 8) + k * 28));
-        w2 = fx_sin8((uint8_t)((fx_ph2 >> 8) - k * 45 + 64));
-
-        if(fx_multi())
-        {
-            hue = (uint8_t)(base + (((int16_t)w1 - 128) * 40) / 256);
-            sat = 230;
-        }
-        else
-        {
-            hue = (uint8_t)(fx_pal_hue[led_rgb_index & 0x07] + (((int16_t)w1 - 128) * 16) / 256);
-            sat = fx_pal_sat[led_rgb_index & 0x07];
-        }
-        fx_hsv(hue, sat, iPWM_MAX, rgb);
-
-        lev = (uint16_t)((w2 * (96 + ((w1 * 160) >> 8))) >> 8);
-        lev = (uint16_t)(40 + ((lev * 216) >> 8));
-        fx_put(fx_idx(k), rgb, lev);
+        w1 = fx_wave((uint16_t)(fx_ph[0] + k * 7000));
+        w2 = fx_wave((uint16_t)(fx_ph[1] - k * 11500 + 16384));
+        m  = (uint16_t)(((w2 >> 8) * (100 + (((w1 >> 8) * 156U) >> 8))) >> 8);
+        fx_pal((uint16_t)(fx_col + ((int32_t)w1 - 32768) / 3), &c);
+        fx_set(k, &c, (uint16_t)(500 + m * 14));
     }
 }
 
 /******************************************************************************
-* 流星: 头部以亚像素精度平滑移动, 拖尾按平方曲线渐隐, 头部近白;
-*       每颗流星之间随机间隔, 全彩时每颗换色
+* 20 萤火虫: 3 只萤火虫缓慢游走, 各自不定时地亮起、熄灭, 带一点余光
 ******************************************************************************/
-static const uint8_t            fx_meteor_inc[5] = {28, 21, 15, 11, 8};
-#define iFX_METEOR_TAIL         (4*256)
-
-static void fx_meteor(void)
+static void fx_firefly(void)
 {
-    uint8_t  k, rgb[3];
-    int16_t  d;
-    uint16_t lev, x;
+    uint8_t  i;
+    uint16_t prev;
+    fx_pt_t  *p;
+    fx_rgb_t c;
 
-    if(fx_cnt)
+    fx_cv_keep(215);
+    for(i=0; i<iFX_PT_NUM; i++)
     {
-        fx_cnt--;
-        clr_rgb();
-        return;
-    }
+        p = &fx_pt[i];
+        p->v = (int16_t)(p->v + (int8_t)(fx_rand8() - 128) / 16);
+        if(p->v > 48)  p->v = 48;
+        if(p->v < -48) p->v = -48;
+        p->x = (int16_t)(p->x + p->v / 16);
+        if(p->x < 0)    { p->x = 0;    p->v = (int16_t)-p->v; }
+        if(p->x > 1792) { p->x = 1792; p->v = (int16_t)-p->v; }
 
-    fx_pos = (int16_t)(fx_pos + fx_meteor_inc[fx_spd()]);
-    if(fx_pos > (int16_t)(iLED_MAX * 256 + iFX_METEOR_TAIL))
-    {
-        fx_pos = -256;
-        fx_cnt = 20 + (fx_rand8() & 0x3F);
-        fx_hue[0] = (uint8_t)(fx_hue[0] + 40 + (fx_rand8() & 0x3F));
-    }
-
-    for(k=0; k<iLED_MAX; k++)
-    {
-        d = (int16_t)(fx_pos - k * 256);
-        if(d <= -256)
-            lev = 0;
-        else if(d < 0)
-            lev = (uint16_t)(256 + d);                  // 头部前沿抗锯齿
-        else if(d < iFX_METEOR_TAIL)
+        if(p->t)
         {
-            x = (uint16_t)(iFX_METEOR_TAIL - d);
-            lev = (uint16_t)(((uint32_t)x * x) >> 12);  // 平方衰减拖尾
+            p->t--;
+            continue;
         }
+        prev = p->ph;
+        p->ph = (uint16_t)(p->ph + fx_k(330));
+        if(p->ph < prev)
+        {
+            p->ph = 0;
+            p->t = (uint16_t)(fx_dur(80) + fx_rand8());
+            continue;
+        }
+        if(iFX_THEME_SPECTRUM == fx_theme_idx())
+            fx_lerp_stops(fx_firefly_rgb, fx_firefly_rgb, 0, &c);
         else
-            lev = 0;
-
-        if(fx_multi())
-            fx_hsv((uint8_t)(fx_hue[0] + (d >> 6)), (d < 256) ? 110 : 255, iPWM_MAX, rgb);
-        else
-            memcpy(rgb, fx_pal(), 3);
-        fx_put(fx_idx(k), rgb, lev);
+            fx_pal((uint16_t)(fx_main() + i * 6000), &c);
+        fx_splat(fx_tmp, p->x, 240, &c, (uint16_t)(fx_wave(p->ph) >> 4));
     }
+    fx_merge_max();
 }
 
 /******************************************************************************
-* 烛光: 每颗灯随机游走的目标亮度 + 一阶平滑, 偶尔整体"被风吹"变暗;
-*       全彩/白: 琥珀色烛光 (亮时略偏黄, 暗时偏红); 其它: 用所选颜色微闪
+* 21 篝火: 一维火焰模拟 (随机火星 + 热量扩散 + 冷却), 显示做平滑处理不刺眼;
+*          落日 / 琥珀 / 幻彩 主题为真实火焰色, 其他主题为对应颜色的"冷焰"
 ******************************************************************************/
-static const uint8_t            fx_candle_prob[5] = {80, 52, 34, 22, 14};
-
-static void fx_candle(void)
+static void fx_fire(void)
 {
-    uint8_t k, rgb[3];
-    int16_t diff;
-    bool    amber = fx_multi() || (6 == (led_rgb_index & 0x07));
+    uint8_t  k, h[iLED_MAX], c8;
+    uint16_t v, x;
+    fx_rgb_t c;
+    uint8_t  th = fx_theme_idx();
+    bool     real = (0 == th) || (4 == th) || (iFX_THEME_SPECTRUM == th);
 
-    if((0 == fx_rand8()) && (fx_rand8() < 96))
+    if(++fx_t >= 3)
     {
+        fx_t = 0;
         for(k=0; k<iLED_MAX; k++)
-            fx_tg[k] = (uint16_t)(90 + (fx_rand8() & 0x3F));
+        {
+            c8 = (uint8_t)(fx_rand8() % 18);
+            fx_c[k] = (fx_c[k] > c8) ? (uint8_t)(fx_c[k] - c8) : 0;
+        }
+        for(k=0; k<iLED_MAX; k++)
+            h[k] = (uint8_t)(((uint16_t)fx_c[k ? k-1 : 0] + 2 * fx_c[k] + fx_c[(k < iLED_MAX-1) ? k+1 : k]) >> 2);
+        memcpy(fx_c, h, sizeof(h));
+        if(fx_rand8() < fx_k(150))
+        {
+            k = (uint8_t)(fx_rand8() & (iLED_MAX - 1));
+            v = (uint16_t)(fx_c[k] + 120 + (fx_rand8() % 120));
+            fx_c[k] = (uint8_t)((v > 255) ? 255 : v);
+        }
     }
 
     for(k=0; k<iLED_MAX; k++)
     {
-        if(fx_rand8() < fx_candle_prob[fx_spd()])
-            fx_tg[k] = (uint16_t)(150 + (fx_rand8() % 107));
-
-        diff = (int16_t)(fx_tg[k] - fx_lv[k]);
-        fx_lv[k] = (uint16_t)(fx_lv[k] + diff / 8);
-
-        if(amber)
+        fx_a[k] = (uint16_t)(fx_a[k] + ((int32_t)fx_c[k] * 16 - fx_a[k]) / 8);  // 平滑, 避免刺眼的闪烁
+        v = fx_a[k];
+        if(real)
         {
-            rgb[0] = iPWM_MAX;
-            rgb[1] = (uint8_t)(10 + ((fx_lv[k] * 16) >> 8));
-            rgb[2] = (uint8_t)(fx_lv[k] >> 7);
+            x = (uint16_t)((v >> 4) * 5);                                // 0..1275
+            fx_lerp_stops(fx_fire_tbl[x >> 8], fx_fire_tbl[((x >> 8) < 5) ? (x >> 8) + 1 : 5],
+                          (uint16_t)(x & 0xFF), &c);
         }
         else
-            memcpy(rgb, fx_pal(), 3);
-        fx_put(k, rgb, fx_lv[k]);
+        {
+            fx_pal((uint16_t)(fx_main() + (v << 2)), &c);
+            if(v > 3000)
+                fx_white(&c, (uint16_t)((v - 3000) >> 3));
+        }
+        fx_set(k, &c, (uint16_t)(700 + ((v * 3396U) >> 12)));
     }
 }
 
 /******************************************************************************
-* 番茄专注:
-*   专注 -> 灯条从一端逐渐填满, 当前灯缓慢呼吸 (全彩: 绿 -> 黄 -> 橙 随进度变化)
-*   到点 -> 绿色柔和脉冲 3 次 -> 休息 (绿色, 灯条逐渐减少)
-*   休息结束 -> 暖白脉冲 3 次 -> 等待 (暖白慢呼吸), 按任意键开始下一个番茄
+* 22 番茄专注:
+*   专注 -> 灯带沿主题渐变逐格填满, 当前格缓慢呼吸, 未完成部分保留微弱轨道
+*   到点 -> 主题色柔和脉冲 3 次 -> 休息 (对比色, 灯带逐渐减少)
+*   休息结束 -> 月光色脉冲 3 次 -> 等待 (慢呼吸), 按任意键开始下一个番茄
 *   时长由"速度"档位选择 (专注/休息, 分钟): 15/5, 25/5(默认), 30/5, 45/10, 60/10
 * 注意: 无线模式下设备休眠时灯会关闭, 但计时基于 RTC 不受影响
 ******************************************************************************/
@@ -853,15 +1443,16 @@ enum {
 };
 static const uint8_t            fx_pomo_focus_min[5] = {15, 25, 30, 45, 60};
 static const uint8_t            fx_pomo_break_min[5] = { 5,  5,  5, 10, 10};
-#define iFX_POMO_ALERT_FRAMES   (3*128)                 // 3 次脉冲, 每次 ~1s
-#define iFX_HUE_GREEN           96
+#define iFX_POMO_ALERT_FRAMES   (3*128)
 
 static void fx_pomodoro(void)
 {
-    uint8_t  k, full, frac, p, rgb[3];
+    static const uint8_t moon[3] = {0xFF, 0xD9, 0xA8};
+    uint8_t  k, full, frac, p;
     uint16_t lev, breathe, prog;
     uint32_t el, total;
     bool     key = false;
+    fx_rgb_t c;
 
     while(fx_key_pop(&p))
         key = true;
@@ -879,7 +1470,7 @@ static void fx_pomodoro(void)
             if(el >= total)
             {
                 fx_state++;
-                fx_cnt = 0;
+                fx_t = 0;
                 fx_force_full = true;
                 break;
             }
@@ -889,52 +1480,52 @@ static void fx_pomodoro(void)
             full = (uint8_t)(prog >> 8);
             frac = (uint8_t)(prog & 0xFF);
 
-            fx_ph1 = (uint16_t)(fx_ph1 + 64);           // 4s 呼吸
-            breathe = (uint16_t)(200 + ((fx_sin8((uint8_t)(fx_ph1 >> 8)) * 56) >> 8));
+            fx_ph[0] = (uint16_t)(fx_ph[0] + 64);                       // 4s 呼吸
+            breathe = (uint16_t)(3200 + (fx_wave(fx_ph[0]) >> 6) * 14);  // 78%..100%
 
             for(k=0; k<iLED_MAX; k++)
             {
                 if(iPOMO_FOCUS == fx_state)
                 {
-                    fx_color((uint8_t)(iFX_HUE_GREEN - k * 12), 230, rgb);
+                    fx_pal((uint16_t)(fx_main() + k * 3500), &c);
                     if(k < full)
-                        lev = 176;                      // 已完成
+                        lev = 2800;
                     else if(k == full)
-                        lev = (uint16_t)(24 + ((frac * (breathe - 24)) >> 8));
+                        lev = (uint16_t)(380 + ((frac * (uint32_t)(breathe - 380)) >> 8));
                     else
-                        lev = 14;                       // 未完成: 微弱底光显示轨道
+                        lev = 230;
                 }
                 else
                 {
-                    fx_hsv(iFX_HUE_GREEN, 230, iPWM_MAX, rgb);
+                    fx_pal((uint16_t)(fx_main() + 32768), &c);
                     if(k > full)
-                        lev = breathe;                  // 剩余休息时间
+                        lev = breathe;
                     else if(k == full)
-                        lev = (uint16_t)(((256 - frac) * breathe) >> 8);
+                        lev = (uint16_t)(((256 - frac) * (uint32_t)breathe) >> 8);
                     else
                         lev = 0;
                 }
-                fx_put(fx_idx(k), rgb, lev);
+                fx_set(k, &c, lev);
             }
             break;
 
         case iPOMO_ALERT_BREAK:
         case iPOMO_ALERT_DONE:
-            fx_cnt++;
-            lev = fx_sin8((uint8_t)((fx_cnt << 1) + 192));
+            fx_t++;
+            lev = (uint16_t)(fx_wave((uint16_t)(fx_t << 9)) >> 4);
             if(iPOMO_ALERT_BREAK == fx_state)
-                fx_hsv(iFX_HUE_GREEN, 230, iPWM_MAX, rgb);
+                fx_pal(fx_main(), &c);
             else
-                memcpy(rgb, fx_palette[6], 3);
+                fx_lerp_stops(moon, moon, 0, &c);
             for(k=0; k<iLED_MAX; k++)
-                fx_put(k, rgb, lev);
+                fx_set(k, &c, lev);
 
-            if((fx_cnt >= iFX_POMO_ALERT_FRAMES) || key)
+            if((fx_t >= iFX_POMO_ALERT_FRAMES) || key)
             {
                 fx_state++;
                 fx_rtc0 = led_now_rtc;
                 fx_force_full = false;
-                fx_ph1 = 0;
+                fx_ph[0] = 0;
             }
             break;
 
@@ -943,73 +1534,64 @@ static void fx_pomodoro(void)
             {
                 fx_state = iPOMO_FOCUS;
                 fx_rtc0 = led_now_rtc;
-                fx_ph1 = 0;
+                fx_ph[0] = 0;
                 break;
             }
-            fx_ph1 = (uint16_t)(fx_ph1 + 43);           // 6s 慢呼吸
-            lev = (uint16_t)(26 + ((fx_sin8((uint8_t)((fx_ph1 >> 8) + 192)) * 64) >> 8));
+            fx_ph[0] = (uint16_t)(fx_ph[0] + 43);                       // 6s 慢呼吸
+            fx_lerp_stops(moon, moon, 0, &c);
+            lev = (uint16_t)(410 + (fx_wave(fx_ph[0]) >> 6) * 16);
             for(k=0; k<iLED_MAX; k++)
-                fx_put(k, fx_palette[6], lev);
+                fx_set(k, &c, lev);
             break;
     }
 }
 
 /******************************************************************************
-* 打字涟漪: 从按键对应位置向两侧扩散的光环, 最多 4 个同时存在;
-*           平时保持 ~8% 底光, 全彩时每个涟漪随机颜色
+* 23 打字涟漪: 从按键对应位置向两侧扩散的光环, 最多 4 个同时存在,
+*              每个涟漪取色板中不同颜色; 平时保留 ~7% 主题底光
 ******************************************************************************/
-static const uint8_t            fx_ripple_spd[5]   = {40, 32, 26, 20, 16};
-static const uint8_t            fx_ripple_decay[5] = { 5,  4,  3,  3,  2};
-#define iFX_RIPPLE_W            384                     // 环宽 1.5 颗灯
-#define iFX_RIPPLE_BASE         20                      // 底光
+#define iFX_RIPPLE_W            384
 
 static void fx_ripple(void)
 {
-    uint8_t     p, k, j, rgb[3];
-    int16_t     d, diff;
-    uint16_t    lev;
+    uint8_t     p, k, j;
+    uint16_t    d, diff;
     fx_ripple_t *r;
+    fx_rgb_t    c;
 
     while(fx_key_pop(&p))
     {
-        r = &fx_rp[fx_cnt++ & (iFX_RIPPLE_NUM - 1)];
-        r->pos  = (int16_t)((iLED_POS_NONE == p) ? ((iLED_MAX - 1) * 128) : (p * 256));
+        r = &fx_rp[fx_t++ & (iFX_RIPPLE_NUM - 1)];
+        r->pos  = (int16_t)((iLED_POS_NONE == p) ? 896 : (p * 256));
         r->rad  = 0;
-        r->life = 256;
-        r->hue  = fx_rand8();
+        r->life = 4096;
+        r->c    = fx_rand8();
     }
 
-    fx_ph1 = (uint16_t)(fx_ph1 + 8);
-    fx_color((uint8_t)(fx_ph1 >> 8), 120, rgb);
+    fx_col = (uint16_t)(fx_col + fx_k(3));
     for(k=0; k<iLED_MAX; k++)
-        fx_put(k, rgb, iFX_RIPPLE_BASE);
+    {
+        fx_pal((uint16_t)(fx_col + k * 4000), &c);
+        fx_set(k, &c, 300);
+    }
 
     for(j=0; j<iFX_RIPPLE_NUM; j++)
     {
         r = &fx_rp[j];
         if(0 == r->life)
             continue;
-
-        fx_color(r->hue, 255, rgb);
+        fx_pal((uint16_t)(r->c << 8), &c);
         for(k=0; k<iLED_MAX; k++)
         {
-            d = (int16_t)(k * 256 - r->pos);
-            if(d < 0)
-                d = (int16_t)-d;
-            diff = (int16_t)(d - (int16_t)r->rad);
-            if(diff < 0)
-                diff = (int16_t)-diff;
+            d = fx_abs16((int32_t)k * 256 - r->pos);
+            diff = fx_abs16((int32_t)d - r->rad);
             if(diff < iFX_RIPPLE_W)
-            {
-                lev = (uint16_t)(((uint32_t)(iFX_RIPPLE_W - diff) * 256) / iFX_RIPPLE_W);
-                lev = (uint16_t)((lev * r->life) >> 8);
-                fx_add(k, rgb, lev);
-            }
+                fx_add_to(fx_cv, k, &c,
+                    (uint16_t)(((uint32_t)(iFX_RIPPLE_W - diff) * r->life) / iFX_RIPPLE_W));
         }
-
-        r->rad = (uint16_t)(r->rad + fx_ripple_spd[fx_spd()]);
-        r->life = (r->life > fx_ripple_decay[fx_spd()])
-                ? (uint16_t)(r->life - fx_ripple_decay[fx_spd()]) : 0;
+        r->rad = (uint16_t)(r->rad + fx_k(30));
+        d = fx_k(48);
+        r->life = (r->life > d) ? (uint16_t)(r->life - d) : 0;
         if(r->rad > (iLED_MAX * 256 + iFX_RIPPLE_W))
             r->life = 0;
     }
@@ -1021,56 +1603,103 @@ static void fx_ripple(void)
 
 void led_effect_init(uint8_t mode)
 {
-    uint8_t k;
+    uint8_t i;
 
-    clr_rgb();
-    fx_cnt = 0;
-    fx_ph1 = fx_ph2 = fx_ph3 = 0;
-    fx_pos = -256;
+    fx_xfade_begin();                                   // 从当前画面渐变到新灯效
+
+    memset(fx_cv, 0, sizeof(fx_cv));
+    memset(fx_tmp, 0, sizeof(fx_tmp));
+    memset(fx_ph, 0, sizeof(fx_ph));
+    memset(fx_a, 0, sizeof(fx_a));
+    memset(fx_b, 0, sizeof(fx_b));
+    memset(fx_c, 0, sizeof(fx_c));
+    memset(fx_pt, 0, sizeof(fx_pt));
+    memset(fx_rp, 0, sizeof(fx_rp));
+    fx_col = 0;
+    fx_t = fx_t2 = 0;
     fx_state = 0;
     fx_rtc0 = led_now_rtc;
     fx_force_full = false;
-    memset(fx_hue, 0, sizeof(fx_hue));
-    memset(fx_lv, 0, sizeof(fx_lv));
-    memset(fx_tg, 0, sizeof(fx_tg));
-    memset(fx_rp, 0, sizeof(fx_rp));
     fx_key_flush();
-    fx_lg_acc = 0;
-    fx_lg_cyc = iFX_LG_COLORS * 1000;                   // 留出余量, 各灯错开相位后周期数不会小于 0
-    fx_lg_rtc = led_now_rtc;
 
     fx_rand_state ^= (uint16_t)led_now_rtc;
     if(0 == fx_rand_state)
         fx_rand_state = 0xACE1;
 
-    if(iMODE_LED_CANDLE == mode)
-    {
-        for(k=0; k<iLED_MAX; k++)
-            fx_lv[k] = fx_tg[k] = 200;
+    if(false == fx_intro_done)
+    {                                                   // 上电后第一次点亮: 开机动画
+        fx_intro_done = true;
+        fx_intro = iFX_INTRO_FRAMES;
+        fx_xf = 0;
     }
-    else if(iMODE_LED_METEOR == mode)
+
+    switch(mode)
     {
-        fx_hue[0] = fx_rand8();
+        case iMODE_LED_NEON:
+            for(i=0; i<3; i++)
+                fx_b[i] = (uint16_t)(30 + i * 50);      // 三段灯管依次点火
+            fx_t = fx_dur(640);
+            break;
+        case iMODE_LED_FIREFLY:
+            for(i=0; i<iFX_PT_NUM; i++)
+            {
+                fx_pt[i].x = (int16_t)(300 + i * 600);
+                fx_pt[i].t = (uint16_t)(i * 70);
+            }
+            break;
+        case iMODE_LED_FIRE:
+            for(i=0; i<iLED_MAX; i++)
+                fx_c[i] = 120;
+            break;
+        case iMODE_LED_STARDUST:
+        case iMODE_LED_SHOWER:
+        case iMODE_LED_RIPPLE:
+            fx_col = fx_main();
+            break;
+        default:
+            break;
     }
 }
 
 void led_effect_run(uint8_t mode)
 {
+    if(fx_intro)
+    {
+        fx_intro_frame();
+        if(fx_intro)
+            fx_commit();
+        return;
+    }
+
     switch(mode)
     {
-        case iMODE_LED_LG_L_R:      fx_liuguang();      break;
-        case iMODE_LED_JG:          fx_jiguang();       break;
-        case iMODE_LED_SOFT_ON:     fx_soft_on();       break;
-        case iMODE_LED_SOFT_BREATH: fx_soft_breath();   break;
-        case iMODE_LED_RAINBOW:     fx_rainbow();       break;
+        case iMODE_LED_GLAZE:       fx_glaze();         break;
+        case iMODE_LED_TIDE:        fx_tide();          break;
+        case iMODE_LED_TWIN:        fx_twin();          break;
+        case iMODE_LED_SHIFT:       fx_shift();         break;
+        case iMODE_LED_FLOW:        fx_flow();          break;
+        case iMODE_LED_STARDUST:    fx_stardust();      break;
+        case iMODE_LED_WATER:       fx_water();         break;
+        case iMODE_LED_HEART:       fx_heart();         break;
+        case iMODE_LED_NEON:        fx_neon();          break;
+        case iMODE_LED_PENDULUM:    fx_pendulum();      break;
+        case iMODE_LED_SHOWER:      fx_shower();        break;
+        case iMODE_LED_COLLIDE:     fx_collide();       break;
+        case iMODE_LED_BLOOM:       fx_bloom();         break;
+        case iMODE_LED_CURTAIN:     fx_curtain();       break;
+        case iMODE_LED_AFTERGLOW:   fx_afterglow();     break;
+        case iMODE_LED_SOFT_ON:     fx_soft();          break;
+        case iMODE_LED_LAVA:        fx_lava();          break;
+        case iMODE_LED_BAND:        fx_band();          break;
         case iMODE_LED_AURORA:      fx_aurora();        break;
-        case iMODE_LED_METEOR:      fx_meteor();        break;
-        case iMODE_LED_CANDLE:      fx_candle();        break;
+        case iMODE_LED_FIREFLY:     fx_firefly();       break;
+        case iMODE_LED_FIRE:        fx_fire();          break;
         case iMODE_LED_POMODORO:    fx_pomodoro();      break;
         case iMODE_LED_RIPPLE:      fx_ripple();        break;
-        default:
+        default:                                        // iMODE_LED_OFF
             fx_key_flush();
-            clr_rgb();
+            memset(fx_cv, 0, sizeof(fx_cv));
             break;
     }
+    fx_commit();
 }

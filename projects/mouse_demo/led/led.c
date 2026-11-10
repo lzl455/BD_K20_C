@@ -443,7 +443,7 @@ void logo_process(void)
     {
         led_pre_mode = led_cur_mode;
         logo_mode_init(led_cur_mode);
-        led_master_restart(rtc_temp);           // 切换模式: 从黑淡入, 帧时钟重新同步
+        led_frame_resync(rtc_temp);             // 切换模式: 画面交叉渐变过渡, 帧时钟重新同步
     }
     else
     {
