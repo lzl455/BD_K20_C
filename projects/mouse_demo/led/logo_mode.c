@@ -348,74 +348,6 @@ void led_mode_nhjb(void)
 // 代码区                                                                      ;
 //=============================================================================;
 
-void led_mode_liuguang(void)
-{
-    unsigned char i, k;
-    uint16_t x;
-
-    if(led_speed_lev>delay_time_count)
-    {
-		delay_time_count++;
-        return;
-	}
-    delay_time_count = 0;
-
-    x = 0x01;
-    for(i=0; i<iLED_MAX; i++)
-    {
-        if(led_status_reg & x)
-        {
-            pwm_duty_array_0[i]++;
-            if(iPWM_MAX <= pwm_duty_array_0[i])
-            {
-                led_status_reg &= ~x;
-            }
-        }
-        else
-        {
-            pwm_duty_array_0[i]--;
-            if(0 == pwm_duty_array_0[i])
-            {
-                pwm_duty_array_1[i]++;
-                if(7 < pwm_duty_array_1[i])
-                    pwm_duty_array_1[i]=1;
-                led_status_reg |= x;
-            }
-        }
-        x <<= 1;
-    }
-
-    rgb_enable = rgb_en_tbl[led_rgb_index&0x0F];
-
-    for(k=0; k<iLED_MAX; k++)
-    {
-        if(bled_run_dir)
-        {
-            gtemp_j = pwm_duty_array_0[k];
-            if(iRGB_QICAI == led_rgb_index)
-                rgb_enable = pwm_duty_array_1[k];
-        }
-        else
-        {
-            gtemp_j = pwm_duty_array_0[iLED_MAX-1-k];
-            if(iRGB_QICAI == led_rgb_index)
-                rgb_enable = pwm_duty_array_1[iLED_MAX-1-k];
-        }
-
-        if(rgb_enable&iPWM_R)
-            pwm_rgb_tbl[k][iR_INDEX] = gtemp_j;
-        else
-            pwm_rgb_tbl[k][iR_INDEX] = 0;
-        if(rgb_enable&iPWM_G)
-            pwm_rgb_tbl[k][iG_INDEX] = gtemp_j;
-        else
-            pwm_rgb_tbl[k][iG_INDEX] = 0;
-        if(rgb_enable&iPWM_B)
-            pwm_rgb_tbl[k][iB_INDEX] = gtemp_j;
-        else
-            pwm_rgb_tbl[k][iB_INDEX] = 0;
-    }
-}
 
 // 速度档位共 5 级 (iSPEED_LEV_MIN..iSPEED_LEV_MAX), 原表只有 4 项且用 &0x03 取值,
 // 导致最慢一档回绕成最快; 现统一补齐 5 项并用 led_speed_idx() 取值
@@ -1040,6 +972,7 @@ void logo_mode_init(uint8_t mode)
 
     led_process_index = 0;
     rgb_index = 0;
+    bled_hr_frame = false;                      // 默认使用 0..64 缓冲, 由需要的灯效自行开启
 
     clr_rgb();
     memset(pwm_duty_array_0, 0x00, 16);
@@ -1066,15 +999,6 @@ void logo_mode_init(uint8_t mode)
             pwm_duty_array_0[0] = iPWM_MAX;
             pwm_duty_array_0[1] = 0x00;
             pwm_duty_array_0[2] = 0x00;
-            break;
-        case iMODE_LED_LG_L_R:
-            delay_time_count = 0;
-            led_status_reg = 0xCCCC;
-            for(i=0; i<iLED_MAX; i++)
-            {
-                pwm_duty_array_0[i] = led_liuguang_l_r_tbl[i];
-                pwm_duty_array_1[i] = led_liuguang_rgb_tbl[i];
-            }
             break;
         case iMODE_LED_STAR:
             delay_time_count = 0;
@@ -1108,7 +1032,7 @@ void logo_mode_init(uint8_t mode)
             snake_led_index = 3;
             pwm_duty_array_0[snake_led_index] = iPWM_SNAKE_MAX;
             break;
-        default:                                // 激光 及 新增灯效
+        default:                                // 流光 / 激光 及 新增灯效
             led_effect_init(mode);
             break;
     }
@@ -1135,9 +1059,6 @@ void logo_mode_run(uint8_t mode)
             break;
         case iMODE_LED_NHJB:
             led_mode_nhjb();
-            break;
-        case iMODE_LED_LG_L_R:
-            led_mode_liuguang();
             break;
         case iMODE_LED_STAR:
             led_mode_star();
@@ -1170,7 +1091,7 @@ void logo_mode_run(uint8_t mode)
                 led_cur_mode = iMODE_LED_ON;
                 break;
             }
-            led_effect_run(mode);               // 激光 及 新增灯效
+            led_effect_run(mode);               // 流光 / 激光 及 新增灯效
             break;
     }
 }

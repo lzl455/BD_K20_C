@@ -19,6 +19,7 @@
 //
 extern bool                     bled_run_dir;           // logo_mode.c
 extern unsigned char    const   led_single_table[];     // led_logo_tbl.h: 按键 -> 灯位置(0..6, 7=无)
+extern unsigned char    const   rgb_en_tbl[];           // led_logo_tbl.h: 颜色序号 -> RGB 位掩码
 
 //-----------------------------------------------------------------------------;
 // 输出管线 —— 以下数据会在 RAM 代码 (USB SOF 中断) 中访问, 不能放 const(flash)
@@ -33,8 +34,24 @@ static uint16_t                 led_gamma_tbl[iPWM_MAX+1] = {  // round(256*(v/6
 // 亮度档位 -> 系数(0..256), 与原 drv_ledc_write 的移位方案最大值一致: 32/64/128/255
 static uint16_t                 led_level_scale[iLED_LEV_MAX+1] = {0, 32, 64, 128, 256};
 
+// 高精度 gamma: round(65535*(v/64)^2.2), 输入 0..4096 时在相邻两项间线性插值
+static uint16_t                 led_gamma_hr_tbl[iPWM_MAX+1] = {
+         0,     7,    32,    78,   147,   240,   359,   504,
+       676,   875,  1104,  1361,  1648,  1966,  2314,  2693,
+      3104,  3547,  4022,  4530,  5072,  5646,  6255,  6897,
+      7574,  8286,  9033,  9815, 10632, 11486, 12375, 13301,
+     14263, 15262, 16298, 17371, 18482, 19630, 20816, 22040,
+     23303, 24604, 25943, 27322, 28739, 30196, 31692, 33227,
+     34802, 36417, 38072, 39768, 41503, 43280, 45097, 46954,
+     48853, 50793, 52774, 54796, 56860, 58966, 61114, 63303,
+     65535,
+};
+
 uint16_t                        led_master_fade = 256;
 uint32_t                        led_now_rtc;
+
+uint16_t                        pwm_rgb_hr[iLED_MAX][3];
+volatile bool                   bled_hr_frame;
 
 static uint16_t                 led_fade_target = 256;
 static uint32_t                 led_frame_rtc;
@@ -152,6 +169,35 @@ __RAM_CODE void led_output_transform(const uint8_t *src, uint8_t *dst)
 #if LED_FADE_EN
     scale = (scale * led_master_fade) >> 8;
 #endif
+
+    if(bled_hr_frame)
+    {                                                   // 高精度路径 (12bit 输入)
+        const uint16_t *hr = &pwm_rgb_hr[0][0];
+        uint32_t x, idx, frac, g;
+
+        for(i=0; i<iLED_MAX*3; i++)
+        {
+            x = hr[i];
+            if(x > iLED_HR_MAX)
+                x = iLED_HR_MAX;
+#if LED_GAMMA_EN
+            idx  = x >> 6;
+            frac = x & 0x3F;
+            g = led_gamma_hr_tbl[idx];
+            if(idx < iPWM_MAX)
+                g += ((led_gamma_hr_tbl[idx+1] - g) * frac) >> 6;
+#else
+            g = x << 4;                                 // 0..65536
+#endif
+            o = (g * scale + 32768) >> 16;
+            if((0 == o) && (0 != x) && (0 != scale))
+                o = 1;
+            if(o > 0xFF)
+                o = 0xFF;
+            dst[i] = (uint8_t)o;
+        }
+        return;
+    }
 
     for(i=0; i<iLED_MAX*3; i++)
     {
@@ -427,6 +473,119 @@ static void fx_color(uint8_t hue, uint8_t sat, uint8_t *rgb)
 //=============================================================================;
 // 灯效实现                                                                     ;
 //=============================================================================;
+
+/******************************************************************************
+* 流光 (重写, 去抖动): 亮度波沿灯条流动, 波长 4 颗灯; 全彩时每颗灯在最暗处换色
+*   原实现的抖动来源及对应处理:
+*   1. 内部只有 0..64 共 65 级, gamma 后高亮区一级 ≈ 9/255  -> 写 12bit 高精度缓冲
+*   2. 用"跳帧"降速, 亮度每 2~5 帧才变一次, 形成可见台阶  -> 相位按 RTC 时间连续推进
+*   3. 三角波在波峰处突然折返                              -> 升余弦波, 首尾平滑
+*   4. 波谷完全熄灭再点亮, 且在此瞬间切换颜色              -> 保留 ~12% 感知亮度底光,
+*                                                            颜色在波谷附近交叉渐变
+*   周期 (速度档位): 1 / 2 / 3 / 4 / 5 秒, 与原实现在 USB 下的速度一致
+******************************************************************************/
+static const uint16_t           fx_lg_cos_tbl[65] = {   // round(65535*(1-cos(πi/64))/2)
+         0,    39,   158,   355,   630,   982,  1411,  1915,
+      2494,  3146,  3869,  4662,  5522,  6448,  7438,  8488,
+      9597, 10762, 11980, 13248, 14563, 15922, 17321, 18758,
+     20228, 21728, 23256, 24806, 26375, 27960, 29556, 31160,
+     32767, 34375, 35979, 37575, 39160, 40729, 42279, 43807,
+     45307, 46777, 48214, 49613, 50972, 52287, 53555, 54773,
+     55938, 57047, 58097, 59087, 60013, 60873, 61666, 62389,
+     63041, 63620, 64124, 64553, 64905, 65180, 65377, 65496,
+     65535,
+};
+static const uint16_t           fx_lg_inc[5] = {512, 256, 171, 128, 102};   // 2^24 / 周期tick
+#define iFX_LG_FLOOR            492                     // 底光 ≈ 12% (感知亮度)
+#define iFX_LG_XFADE            6554                    // 波谷两侧 10% 周期内交叉换色
+#define iFX_LG_COLORS           7                       // 全彩颜色序列: rgb_en_tbl 1..7
+
+static uint32_t                 fx_lg_acc;              // 周期内相位 (2^24 = 1 周期)
+static uint32_t                 fx_lg_cyc;              // 已完成的周期数
+static uint32_t                 fx_lg_rtc;
+
+/* 升余弦: p(0..65535) -> 0..65535, p=0 为波谷, p=32768 为波峰 */
+static uint16_t fx_lg_wave(uint16_t p)
+{
+    uint32_t q = (p >= 0x8000) ? (0x10000UL - p) : p;   // 对称折叠到 0..0x8000
+    uint32_t idx = q >> 9, frac = q & 0x1FF;
+    uint32_t y = fx_lg_cos_tbl[idx];
+
+    if(idx < 64)
+        y += ((fx_lg_cos_tbl[idx+1] - y) * frac) >> 9;
+    return (uint16_t)y;
+}
+
+/* 全彩颜色序列: RGB 位掩码 1..7 = 红 绿 黄 蓝 紫 青 白 */
+static uint8_t fx_lg_mask(uint32_t n)
+{
+    return (uint8_t)(1 + (n % iFX_LG_COLORS));
+}
+
+static void fx_liuguang(void)
+{
+    uint32_t dt, b, wa, wb, cyc, ch;
+    int32_t  p32;
+    uint16_t p;
+    uint8_t  k, c, ma, mb, phys;
+    static const uint8_t bit[3] = {iPWM_R, iPWM_G, iPWM_B};
+    static const uint8_t idx[3] = {iR_INDEX, iG_INDEX, iB_INDEX};
+
+    dt = led_now_rtc - fx_lg_rtc;
+    fx_lg_rtc = led_now_rtc;
+    if(dt > 65536)
+        dt = 65536;                                     // 休眠唤醒等长间隔: 最多前进 2s
+    fx_lg_acc += dt * fx_lg_inc[fx_spd()];
+    fx_lg_cyc += fx_lg_acc >> 24;
+    fx_lg_acc &= 0xFFFFFF;
+
+    for(k=0; k<iLED_MAX; k++)
+    {
+        // 第 k 颗灯滞后 1/4 周期 -> 波向序号增大方向流动
+        p32 = (int32_t)(fx_lg_acc >> 8) - (int32_t)k * 16384;
+        cyc = fx_lg_cyc + (uint32_t)(p32 >> 16);        // p32 为负时借位 (算术右移)
+        p   = (uint16_t)(p32 & 0xFFFF);
+
+        b = iFX_LG_FLOOR + (((uint32_t)(iLED_HR_MAX - iFX_LG_FLOOR) * fx_lg_wave(p)) >> 16);
+
+        if(fx_multi())
+        {
+            // 波谷附近从上一个颜色渐变到下一个颜色, 颜色序列各灯错开 1 位
+            if(p < iFX_LG_XFADE)
+            {
+                ma = fx_lg_mask(cyc + k - 1);
+                mb = fx_lg_mask(cyc + k);
+                wb = 32768 + ((uint32_t)p * 32768) / iFX_LG_XFADE;
+            }
+            else if(p > (0x10000 - iFX_LG_XFADE))
+            {
+                ma = fx_lg_mask(cyc + k);
+                mb = fx_lg_mask(cyc + k + 1);
+                wb = ((uint32_t)(p - (0x10000 - iFX_LG_XFADE)) * 32768) / iFX_LG_XFADE;
+            }
+            else
+            {
+                ma = mb = fx_lg_mask(cyc + k);
+                wb = 0;
+            }
+        }
+        else
+        {
+            ma = mb = rgb_en_tbl[led_rgb_index & 0x0F];
+            wb = 0;
+        }
+        wa = 65536 - wb;
+
+        phys = bled_run_dir ? (uint8_t)(iLED_MAX - 1 - k) : k;
+        for(c=0; c<3; c++)
+        {
+            ch = ((ma & bit[c]) ? wa : 0) + ((mb & bit[c]) ? wb : 0);    // 0..65536
+            pwm_rgb_hr[phys][idx[c]] = (uint16_t)((b * ch) >> 16);
+            pwm_rgb_tbl[phys][idx[c]] = (uint8_t)(pwm_rgb_hr[phys][idx[c]] >> 6);
+        }
+    }
+    bled_hr_frame = true;
+}
 
 /******************************************************************************
 * 激光 (按键响应): 按到哪颗灯亮哪颗, 并向两侧轻微扩散后渐隐
@@ -876,6 +1035,9 @@ void led_effect_init(uint8_t mode)
     memset(fx_tg, 0, sizeof(fx_tg));
     memset(fx_rp, 0, sizeof(fx_rp));
     fx_key_flush();
+    fx_lg_acc = 0;
+    fx_lg_cyc = iFX_LG_COLORS * 1000;                   // 留出余量, 各灯错开相位后周期数不会小于 0
+    fx_lg_rtc = led_now_rtc;
 
     fx_rand_state ^= (uint16_t)led_now_rtc;
     if(0 == fx_rand_state)
@@ -896,6 +1058,7 @@ void led_effect_run(uint8_t mode)
 {
     switch(mode)
     {
+        case iMODE_LED_LG_L_R:      fx_liuguang();      break;
         case iMODE_LED_JG:          fx_jiguang();       break;
         case iMODE_LED_SOFT_ON:     fx_soft_on();       break;
         case iMODE_LED_SOFT_BREATH: fx_soft_breath();   break;

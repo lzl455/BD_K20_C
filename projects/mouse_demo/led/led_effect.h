@@ -50,6 +50,12 @@
 extern uint16_t                 led_master_fade;    // 当前主亮度 0..256
 extern uint32_t                 led_now_rtc;
 
+// 高精度帧缓冲: 每通道 0..iLED_HR_MAX (12bit 感知亮度), 由需要细腻渐变的灯效写入.
+// bled_hr_frame = true 时输出管线改用该缓冲, 避免 0..64 只有 65 级造成的台阶/抖动.
+#define iLED_HR_MAX             4096
+extern uint16_t                 pwm_rgb_hr[][3];
+extern volatile bool            bled_hr_frame;
+
 // 输出管线: pwm_rgb_tbl(0..64) -> LEDC 数据(0..255), 由 drv_ledc_write() 调用 (RAM 代码)
 extern void led_output_transform(const uint8_t *src, uint8_t *dst);
 

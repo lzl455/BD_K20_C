@@ -205,7 +205,6 @@ extern void led_mode_on(void);
 extern void led_mode_breath(void);
 extern void led_mode_snake(void);
 extern void led_mode_nhjb(void);
-extern void led_mode_liuguang(void);
 extern void led_mode_star(void);
 extern void led_mode_sbzl(void);
 
