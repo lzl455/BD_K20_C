@@ -156,7 +156,7 @@ void laod_defaut_status(void)
     key_ctrl &= ~bwin_lock_status;
     key_ctrl |= bwin_mac_sataus;
 
-    led_cur_mode = iMODE_LED_SBZL;
+    led_cur_mode = iMODE_LED_SOFT_ON;           // 默认灯效: 办公柔光
     bled_bright_en = true;
 }
 

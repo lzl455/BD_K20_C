@@ -58,11 +58,13 @@ static volatile bool            bled_key_activity;
 // 只影响"按键循环"的顺序与可选范围, 不影响模式编号 (上位机/Flash 兼容).
 // 如需办公优先, 可改为:
 //   iMODE_LED_SOFT_ON, iMODE_LED_SOFT_BREATH, iMODE_LED_CANDLE, iMODE_LED_POMODORO,
-//   iMODE_LED_RIPPLE,  iMODE_LED_ON, iMODE_LED_BREATH, ... (删去 爆闪 等刺激性灯效)
+//   iMODE_LED_RIPPLE,  iMODE_LED_ON, iMODE_LED_BREATH, ...
+// 爆闪 (iMODE_LED_BS) 已移出按键循环: 互补色高频交替闪烁, 不适合办公且对光敏人群不友好;
+// 上位机仍可直接设置该模式. 若当前模式不在表中, 按键切换会回到表中第一项.
 //
 static const uint8_t            led_mode_cycle_tbl[] = {
     iMODE_LED_ON,       iMODE_LED_BREATH,   iMODE_LED_SNAKE,    iMODE_LED_NHJB,
-    iMODE_LED_LG_L_R,   iMODE_LED_STAR,     iMODE_LED_SBZL,     iMODE_LED_BS,
+    iMODE_LED_LG_L_R,   iMODE_LED_STAR,     iMODE_LED_SBZL,
     iMODE_LED_QCNH,     iMODE_LED_LHTW,     iMODE_LED_DXTW,     iMODE_LED_SXTW,
     iMODE_LED_TXTW,     iMODE_LED_FXTW,     iMODE_LED_JG,
     iMODE_LED_SOFT_ON,  iMODE_LED_SOFT_BREATH, iMODE_LED_RAINBOW, iMODE_LED_AURORA,
