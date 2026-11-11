@@ -169,6 +169,15 @@ extern  uint8_t hid_keyboard_out_report_value;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
+/* 休眠(LEVEL1及以上)时发送数码管:
+ * 未插电或已充满 -> exled_ctrl=0x02 熄灭数码管；充电中 -> 保留电量/充电显示(仅背光已关) */
+__RAM_CODE static void sleep_exled_send(void)
+{
+    if((0 == (bat_status&bcharging)) || (0 != (bat_status&bcharge_ok)))
+        exled_ctrl = 0x02;
+    exLogo_send();
+}
+
 __RAM_CODE uint8_t ex2_app_mouse_scan(void)
 {
     uint8_t temp_buff[8];
@@ -197,7 +206,7 @@ __RAM_CODE uint8_t ex2_app_mouse_scan(void)
     {
         logo_off();
         led_hint_process();
-        exLogo_send();
+        sleep_exled_send();                     // 原来直接发送，led_hint_process()刚画好的电量又被点亮
     }
     if(0 == (bat_status&blvd_power_on))
         profile_bas_set_level(bat_value);       // 蓝牙读取的电量与数码管显示保持一致
@@ -415,7 +424,7 @@ __RAM_CODE void drv_rtc_isr_callback(void)
                     mouse_periph_wakeup_enable(WAKEUP_SLEEP_LEVEL1);
 
                     logo_off();
-                    exLogo_send();
+                    sleep_exled_send();         // 原来未置exled_ctrl=0x02，只关了背光，数码管仍亮
                     ex2_ll_set_next_polling_time(1);
                 }
                 sys_tick_count += 8;
