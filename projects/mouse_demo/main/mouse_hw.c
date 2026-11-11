@@ -83,9 +83,12 @@ extern uint32_t             adv_interval_ms;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
+static bool                 bcharge_sleep_init = false;
+
 pmu_lpm_t pm_checker_callback(void)
 {
     if(ms_sleep_level < MS_SLEEP_LEVEL2) {
+        bcharge_sleep_init = false;
         if(MS_SLEEP_LEVEL0 == ms_sleep_level)
         {                                       // 此处根据实际情况设置，有PWM，ARGB等不同外设，休眠状态会有差异
             if(true==bargb_valid)
@@ -116,7 +119,19 @@ pmu_lpm_t pm_checker_callback(void)
             while(1);        
         }
         else
-        {
+        {                                       // 充电中: 与未插电一致，停止回连/对码进入休眠，按键唤醒后复位回连
+            if(false == bcharge_sleep_init)
+            {
+                bcharge_sleep_init = true;
+
+                logo_off();                     // 关背光，数码管保留电量/充电显示
+                exLogo_send();
+
+                drv_encoder_control(OM_ENCODER, ENCODER_CONTROL_STOP, NULL);
+                mouse_periph_wakeup_enable(WAKEUP_SLEEP_LEVEL2);
+                bperiph_int = 0;                // 清除休眠前残留的唤醒标志，避免立即复位重新回连
+            }
+
             if((bat_status & bcharge_ok)!=0)
             {
                 exled_ctrl = 0x02;
