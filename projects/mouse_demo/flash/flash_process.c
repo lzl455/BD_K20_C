@@ -156,7 +156,7 @@ void laod_defaut_status(void)
     key_ctrl &= ~bwin_lock_status;
     key_ctrl |= bwin_mac_sataus;
 
-    led_cur_mode = iMODE_LED_LG_L_R;
+    led_cur_mode = iMODE_LED_SBZL;
     bled_bright_en = true;
 }
 
