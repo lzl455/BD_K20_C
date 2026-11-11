@@ -73,7 +73,7 @@ unsigned char           const   matrixkey_mac_fn_tbl[] =
     iSTD_V,             iKEY_TYPE_STD|iKEY_PRESS,
     iSTD_B,             iKEY_TYPE_STD|iKEY_PRESS,
     iSTD_5,             iKEY_TYPE_STD|iKEY_PRESS,
-    iSTD_4,             iKEY_TYPE_STD|iKEY_PRESS,
+    iMODE_KEY_USB,      iKEY_TYPE_SPECIAL,                                  // R7 4: Fn+4 USB模式
 
 // C5
     iSTD_U,             iKEY_TYPE_STD|iKEY_PRESS,

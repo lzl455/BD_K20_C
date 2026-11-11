@@ -267,6 +267,7 @@ extern uint8_t                  sys_type;
 //}
 extern device_type_t            device_type;
 extern device_type_t            bt_index;
+extern device_type_t            wireless_type;
 
 extern volatile uint32_t        sys_tick_count;
 extern uint32_t                 rtc_init_value;

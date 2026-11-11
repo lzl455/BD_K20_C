@@ -66,6 +66,7 @@ volatile uint8_t            sys_ctrl;
 uint8_t                     sys_type;
 device_type_t               device_type;
 device_type_t               bt_index;           // 硬件切换模式，蓝牙多通道情况会使用到
+device_type_t               wireless_type;      // 上一次使用的无线模式(BT0~BT2/2.4G)，USB断开时返回该模式
 
 volatile uint32_t           sys_tick_count;
 uint32_t                    rtc_init_value;

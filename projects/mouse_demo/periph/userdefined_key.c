@@ -682,7 +682,21 @@ std_key_decode_1:
                                 special_key |= bfn_press;
 
                                 break;
-                            case iMODE_KEY_USB&0x0F:
+                            case iMODE_KEY_USB&0x0F:   // Fn+4 切换到USB模式
+                                if(iDEVICE_TYPE_USB == device_type)
+                                    break;
+                                if(0 == USB_5V_PIN)
+                                    break;              // 未插USB线不切换
+
+                                if(iDEVICE_TYPE_24G >= device_type)
+                                    wireless_type = device_type;    // 记录当前无线模式，USB断开后返回
+                                device_type = iDEVICE_TYPE_USB;
+                                key_ctrl &= ~bwin_mac_sataus;
+                                if(sys_mode&(1<<(device_type&0x07)))
+                                    key_ctrl |= bwin_mac_sataus;
+                                flash_save_status();
+                                delayus(10000);
+                                NVIC_SystemReset();
 
                                 break;
                             case iMODE_KEY_BT0&0x0F:

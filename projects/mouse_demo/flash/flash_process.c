@@ -184,7 +184,14 @@ void laod_mouse_status(void)
 
             key_mode = (flash_fifo[i+6]&0x03);
             bt_index = ((flash_fifo[i+6]>>2)&0x03);
-            //device_type = ((flash_fifo[i+6]>>4)&0x07);  // 按键切换模式情况下才能打开 ！！！！！！！！
+            if(iDEVICE_TYPE_BT2 < bt_index)
+                bt_index = iDEVICE_TYPE_BT0;
+            device_type = (device_type_t)((flash_fifo[i+6]>>4)&0x07);  // 按键切换模式
+            if(iDEVICE_TYPE_USB < device_type)
+                device_type = iDEVICE_TYPE_BT0;
+            wireless_type = bt_index;           // bit7: 上一次无线模式为2.4G
+            if(0 != (flash_fifo[i+6]&(1<<7)))
+                wireless_type = iDEVICE_TYPE_24G;
             bat_status &= 0xE0;
             bat_status |= (flash_fifo[i+7]&0x1F);
             key_ctrl &= ~bwin_lock_status;
@@ -216,7 +223,8 @@ void laod_mouse_status(void)
             {
                 laod_defaut_status();
                 bt_index = iDEVICE_TYPE_BT0;
-                //device_type = iDEVICE_TYPE_BT0;  // 按键切换模式情况下才能打开 ！！！！！！！！
+                device_type = iDEVICE_TYPE_BT0;  // 按键切换模式
+                wireless_type = iDEVICE_TYPE_BT0;
             }
             break;
         }
@@ -410,6 +418,10 @@ __attribute__((noinline)) void flash_save_status(void)
     dat_temp[6] = (key_mode&0x03);
     dat_temp[6] |= ((bt_index<<2)&0x0C);
     dat_temp[6] |= ((device_type<<4)&0x70);
+    if(iDEVICE_TYPE_24G >= device_type)
+        wireless_type = device_type;            // 记录最近一次无线模式
+    if(iDEVICE_TYPE_24G == wireless_type)
+        dat_temp[6] |= (1<<7);
     dat_temp[7] = (bat_status&0x1F);
     if(key_ctrl&bwin_lock_status)
         dat_temp[7] |= (1<<5);

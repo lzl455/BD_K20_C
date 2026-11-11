@@ -489,78 +489,119 @@ __RAM_CODE void matrixkey_scan(void)
 extern void                 hi5_usb_init(void);
 extern void                 usb_disconnect(void);
 
-static bool b5v_check_in;
-static uint32_t usb_io_status, mode_swtich_time;
-
 extern bool busb_valid;
 
-#define iMODE_24G           0
-#define iMODE_BLE           1
-#define iMODE_USB           2
+#define iUSB_OFF_DEBOUNCE_MS    300             // USB断开消抖时间(循环检测)
+#define iUSB_OFF_CONFIRM_MS     20              // USB断开阻塞确认时间(上电/休眠检测)
+
+static bool     busb_off_ing;
+static uint32_t usb_off_time;
+
+/******************************************************************************
+* 函数名称: usb_5v_off_confirm()
+* 功能描述: 阻塞方式确认USB 5V已断开
+* 输入参数: 无
+* 输出参数: true: 连续iUSB_OFF_CONFIRM_MS毫秒检测不到5V
+* 说    明:
+******************************************************************************/
+static bool usb_5v_off_confirm(void)
+{
+    for(uint8_t i=0; i<iUSB_OFF_CONFIRM_MS; i++)
+    {
+        if(0 != USB_5V_PIN)
+            return false;
+        delayus(1000);
+    }
+    return (0 == USB_5V_PIN);
+}
+
+/******************************************************************************
+* 函数名称: mode_load_wireless()
+* 功能描述: 当前模式设置为上一次使用的无线模式
+* 输入参数: 无
+* 输出参数: 无
+* 说    明: 同步bt_index及当前模式对应的WIN/MAC系统状态
+******************************************************************************/
+static void mode_load_wireless(void)
+{
+    if(iDEVICE_TYPE_BT2 < bt_index)
+        bt_index = iDEVICE_TYPE_BT0;
+    if(iDEVICE_TYPE_24G < wireless_type)
+        wireless_type = bt_index;
+
+    device_type = wireless_type;
+    if(iDEVICE_TYPE_BT2 >= device_type)
+        bt_index = device_type;
+
+    key_ctrl &= ~bwin_mac_sataus;
+    if(sys_mode&(1<<(device_type&0x07)))
+        key_ctrl |= bwin_mac_sataus;
+}
 
 /******************************************************************************
 * 函数名称: scan_mode_swtich()
-* 功能描述: 模式切换
-* 输入参数:
+* 功能描述: 模式切换检测
+* 输入参数: type: iMODE_CHECK_POWERUP/iMODE_CHECK_NO_DELAY/iMODE_CHECK_DELAY
 * 输出参数: 无
-* 说    明: 手动模式切换的时候，usb切换到其他状态，采用复位处理，其他模式切换到USB，采用直接切换
+* 说    明: 按键切换模式(Fn+1/2/3 无线, Fn+4 USB), 当前模式保存在flash中
+*           USB模式下检测到USB 5V断开, 返回上一次使用的无线模式(保存后复位)
 ******************************************************************************/
 void scan_mode_swtich(uint8_t type)
 {
-    static uint8_t mode_status;
-    uint8_t mode_status_bak;
+    if(iMODE_CHECK_POWERUP == type)
+    {                                           // 上电: device_type 已由 laod_flash_cfg() 加载
+        busb_off_ing = false;
+        if(iDEVICE_TYPE_USB < device_type)
+            device_type = iDEVICE_TYPE_BT0;
 
-    mode_status_bak = iMODE_USB;
-    if(mode_status != mode_status_bak)
+        if(iDEVICE_TYPE_USB != device_type)
+        {
+            wireless_type = device_type;
+            if(iDEVICE_TYPE_BT2 >= device_type)
+                bt_index = device_type;
+            return;
+        }
+
+        if(true == usb_5v_off_confirm())
+        {                                       // USB模式但未插USB线，直接进入上一次的无线模式
+            mode_load_wireless();
+            flash_save_status();
+        }
+        return;
+    }
+
+    if(iDEVICE_TYPE_USB != device_type)
+        return;
+
+    if(0 != USB_5V_PIN)
     {
-        mode_status = mode_status_bak;
-        if(iMODE_CHECK_POWERUP != type)
+        busb_off_ing = false;
+        return;
+    }
+
+    if(iMODE_CHECK_DELAY == type)
+    {                                           // 主循环频繁调用，采用RTC计时消抖
+        uint32_t rtc_temp = drv_rtc_read(OM_RTC);
+
+        if(false == busb_off_ing)
+        {
+            busb_off_ing = true;
+            usb_off_time = rtc_temp;
+            return;
+        }
+        if(mMS_TO_TICK(iUSB_OFF_DEBOUNCE_MS) > (rtc_temp-usb_off_time))
+            return;
+    }
+    else
+    {                                           // 休眠流程中调用，阻塞确认
+        if(false == usb_5v_off_confirm())
             return;
     }
 
-//mode_status = iMODE_USB;
-    if(iMODE_BLE == mode_status)
-    {
-        if(iMODE_CHECK_POWERUP != type)
-        {
-            if(bt_index != device_type)
-            {
-                if(iDEVICE_TYPE_BT2<bt_index)
-                    bt_index = iDEVICE_TYPE_BT0;
-
-                OM_PMU->SW_RSVD1 &= ~PMU_SW_RSVD1_RF_MDOE_MASK;
-                OM_PMU->SW_RSVD1 |= bt_index;
-                NVIC_SystemReset();
-            }
-        }
-        else
-        {
-            device_type = bt_index;
-        }
-    }
-    else if(iMODE_24G == mode_status)
-    {                                           // 下拉 24g
-        if(iMODE_CHECK_POWERUP != type)
-        {
-            if(iDEVICE_TYPE_24G != device_type)
-                NVIC_SystemReset();
-        }
-        else
-        {
-            device_type = iDEVICE_TYPE_24G;
-        }
-    }
-    else //if(iMODE_USB == mode_status)
-    {                                           // 浮空 usb
-        if(iMODE_CHECK_POWERUP != type)
-        {
-            if(iDEVICE_TYPE_USB != device_type)
-                NVIC_SystemReset();
-        }
-        else
-        {
-            device_type = iDEVICE_TYPE_USB;
-        }
-    }
+    // USB已断开，返回上一次的无线模式
+    OM_RCC->USB_CTRL = 0;                       // disconnect
+    mode_load_wireless();
+    flash_save_status();
+    delayus(10000);
+    NVIC_SystemReset();
 }
-
