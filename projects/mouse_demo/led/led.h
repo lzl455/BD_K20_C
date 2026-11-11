@@ -40,6 +40,10 @@
 
 #define iPWM_MAX                64
 #define iPWM_SNAKE_MAX          64
+
+#define iLOGO_FRAME_MS          8           // 灯效帧间隔(ms)，按RTC时间推进
+#define iLOGO_FRAME_TOL_MS      2           // 帧间隔容差(ms)：间隔>=6ms走1帧，>=14ms走2帧
+#define iLED_GAMMA_EN           1           // 1:输出做gamma校正，暗端渐变更平滑  0:线性输出(原效果)
 #define iRGB_QICAI              7
 
 #define iR_INDEX                0x01

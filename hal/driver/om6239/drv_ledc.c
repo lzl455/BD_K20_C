@@ -94,6 +94,19 @@ om_error_t drv_ledc_init(OM_LEDC_Type *om_ledc, ledc_config_t *config)
 extern void uart_tx(unsigned char data);
 extern bool bargb_valid;
 
+#if (iLED_GAMMA_EN)
+// gamma 2.0 校正表: 输入 0~iPWM_MAX(64) -> 输出 0~255，非0输入至少输出1
+// 放在RAM(非const)，flash擦写期间中断里调用也可正常访问
+static uint8_t led_gamma_tbl[iPWM_MAX+1] =
+{
+      0,  1,  1,  1,  1,  2,  2,  3,  4,  5,  6,  8,  9, 11, 12, 14,
+     16, 18, 20, 22, 25, 27, 30, 33, 36, 39, 42, 45, 49, 52, 56, 60,
+     64, 68, 72, 76, 81, 85, 90, 95,100,105,110,115,121,126,132,138,
+    143,149,156,162,168,175,182,188,195,202,209,217,224,232,239,247,
+    255,
+};
+#endif
+
 __RAM_CODE om_error_t drv_ledc_write()
 {
     __ALIGNED(4) static uint8_t pwm_temp[iLED_MAX*3];
@@ -103,6 +116,27 @@ __RAM_CODE om_error_t drv_ledc_write()
 OM_CRITICAL_BEGIN();
     memcpy(pwm_temp, pwm_rgb_tbl, iLED_MAX*3);
 
+#if (iLED_GAMMA_EN)
+    {                                           // 亮度档位: LEV4满幅 LEV3 1/2 LEV2 1/4 LEV1 1/8，与原线性档位最大值一致
+        uint8_t shift = 0;
+        if(iLED_LEV_3 == led_light_lev)
+            shift = 1;
+        else if(iLED_LEV_2 == led_light_lev)
+            shift = 2;
+        else if(iLED_LEV_1 == led_light_lev)
+            shift = 3;
+        for(uint8_t i=0; i<iLED_MAX*3; i++)
+        {
+            uint8_t v = pwm_temp[i];
+            if(0 == v)
+                continue;
+            if(iPWM_MAX < v)
+                v = iPWM_MAX;
+            v = (led_gamma_tbl[v] >> shift);
+            pwm_temp[i] = (0 == v) ? 1 : v;
+        }
+    }
+#else
     if(iLED_LEV_4 == led_light_lev)
     {
         for(uint8_t i=0; i<iLED_MAX*3; i++)
@@ -123,6 +157,7 @@ OM_CRITICAL_BEGIN();
         for(uint8_t i=0; i<iLED_MAX*3; i++)
             pwm_temp[i] >>= 1;
     }
+#endif
 
     OM_LEDC->DMA_CTL = ((uint32_t)pwm_temp << LEDC_DMA_CTL_DMA_ADDR_POS) | (LEDC_DMA_CTL_DMA_LEN_MASK & (iLED_MAX*3));
     // enable ledc
