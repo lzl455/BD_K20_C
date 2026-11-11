@@ -121,7 +121,7 @@ void exLogo_send(void)
         exled = 0;
         exio_ctrl = 0xFF;
     }
-
+    
     OM_GPIO0->OUTENSET = (1<<UART_54E_PIN);
     exLogo_send_byte(CMD_HEARDER_0);
     exLogo_send_byte(CMD_HEARDER_1);

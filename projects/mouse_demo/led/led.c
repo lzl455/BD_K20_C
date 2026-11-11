@@ -452,11 +452,21 @@ void logo_process(void)
         }
     }
 
-    if((false == bled_bright_en) || (iLED_LEV_MIN==led_light_lev) || (iLOW_POWER>=bat_value))
+    if((false == bled_bright_en) || (iLED_LEV_MIN==led_light_lev))
     {
         clr_rgb();
         logo_off();
         return;
+    }
+
+    if((bat_status & bcharging)==0)
+    {
+        if(iLOW_POWER>=bat_value)
+        {
+            clr_rgb();
+            logo_off();
+            return;
+        }
     }
 
     if(false==bargb_valid)

@@ -116,7 +116,12 @@ pmu_lpm_t pm_checker_callback(void)
             while(1);        
         }
         else
-            {                                   // 充电状态不进人休眠
+        {
+            if((bat_status & bcharge_ok)!=0)
+            {
+                exled_ctrl = 0x02;
+                exLogo_send();
+            }
             if(bperiph_int)
                 NVIC_SystemReset();
 
@@ -382,6 +387,7 @@ __RAM_CODE void drv_rtc_isr_callback(void)
                     mouse_periph_wakeup_enable(WAKEUP_SLEEP_LEVEL1);
 
                     logo_off();
+                    exLogo_send();
                     ex2_ll_set_next_polling_time(1);
                 }
                 sys_tick_count += 8;

@@ -24,11 +24,11 @@ extern uint32_t                 exled;
 //{
     #define bled_K7             (1<<27)
     #define bled_K6             (1<<26)
-    #define bled_K5             (1<<25)
-    #define bled_K4             (1<<24)
+    #define bled_K5             (1<<25)   // %
+    #define bled_K4             (1<<24)   // chagre
 
     #define bled_K3             (1<<23)
-    #define bled_K2             (1<<22)
+    #define bled_K2             (1<<22)   // low power
     #define bled_K1             (1<<21)
     #define bled_K8             (1<<19)
     #define bled_2_G            (1<<18)
