@@ -1,0 +1,22 @@
+# ---- Keil build outputs ----
+projects/mouse_demo/keil5/out/
+projects/mouse_demo/keil5/_build/
+projects/mouse_demo/keil5/SE73K.bin
+projects/mouse_demo/keil5/*.uvguix.*
+projects/mouse_demo/keil5/JLinkLog.txt
+projects/mouse_demo/keil5/JLinkSettings.ini
+
+# ---- Compiled firmware / object files ----
+*.bin
+*.axf
+*.map
+*.lst
+*.lnp
+*.dep
+*.crf
+*.o
+*.d
+*.i
+
+# ---- IDE / editor local settings ----
+.vscode/
