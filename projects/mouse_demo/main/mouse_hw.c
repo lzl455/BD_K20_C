@@ -376,7 +376,7 @@ __RAM_CODE void drv_rtc_isr_callback(void)
         switch (ms_sleep_level)
         {
             case MS_SLEEP_LEVEL0:
-                if(ble_sleep_1_time_tbl[sleep_time_ble&0x07] > (rtc_count-rtc_init_value))
+                if(mMS_TO_TICK(3*60*1000) > (rtc_count-rtc_init_value))
                 {
                     ex2_ll_set_next_polling_time(0);
                 }
@@ -394,7 +394,7 @@ __RAM_CODE void drv_rtc_isr_callback(void)
 
                 break;
             case MS_SLEEP_LEVEL1:
-                if(ble_sleep_2_time_tbl[(sleep_time_ble>>4)&0x07] > (rtc_count-rtc_init_value))
+                if(mMS_TO_TICK(7*60*1000) > (rtc_count-rtc_init_value))
                 {
                     ex2_ll_set_next_polling_time(1);
                 }

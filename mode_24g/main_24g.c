@@ -65,7 +65,7 @@ int main_24g(void)
             if(iRF_MODE_NORMAL == rf_mode_type)
             {
                 wheel_scan();
-                if(ble_sleep_1_time_tbl[sleep_time_24g&0x07] < (drv_rtc_read(OM_RTC)-rtc_init_value))
+                if(mMS_TO_TICK(3*60*1000) < (drv_rtc_read(OM_RTC)-rtc_init_value))
                 {
                     sleep_process();
                 }
