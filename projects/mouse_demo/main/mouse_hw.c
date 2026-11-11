@@ -348,6 +348,9 @@ void app_ble_evt_dispatch(uint32_t events)
         matrixkey_scan();
         scan_mode_swtich(iMODE_CHECK_DELAY);
         logo_off();
+        led_hint_process();                     // 未连接(广播中)也刷新数码管电量
+        if(0 == (bat_status&blvd_power_on))
+            profile_bas_set_level(bat_value);
         logo_process();
         device_led_process();
     }
