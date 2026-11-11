@@ -143,6 +143,7 @@ extern bool ex2_hid_tx_notification_keyboard(uint8_t *buf);
 extern bool ex2_hid_tx_notification_bitmap_kb(uint8_t *buf);
 extern bool ex2_hid_tx_notification_consumer_control(uint8_t *buf);
 extern bool profile_bas_tx_notification(uint8_t level);
+extern void profile_bas_set_level(uint8_t level);
 extern  uint8_t hid_keyboard_out_report_value;
 
 /*********************************************************************
@@ -178,6 +179,8 @@ __RAM_CODE uint8_t ex2_app_mouse_scan(void)
         led_hint_process();
         exLogo_send();
     }
+    if(0 == (bat_status&blvd_power_on))
+        profile_bas_set_level(bat_value);       // 蓝牙读取的电量与数码管显示保持一致
 	scan_mode_swtich(iMODE_CHECK_DELAY);
 
     kb_led_status = hid_keyboard_out_report_value;
@@ -297,6 +300,7 @@ void app_ble_evt_dispatch(uint32_t events)
         if (events & EX2_EVENT_APP_RECONNECT) {
             hid_notification_enable(1);
         }
+        bbat_update = true;                     // 每次连接/回连后重新上报当前电量，避免主机显示缓存值
     }
     if (events & EX2_EVENT_APP_VERSION_EXCHANGE) {
         if(ll_ctrl_get_peer_company_id() == 0x0002/* Intel */) {  /* work around intel bluetooth bug */

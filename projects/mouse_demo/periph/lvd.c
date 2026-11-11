@@ -284,6 +284,7 @@ __RAM_CODE void bat_check(void)
 
         lvd_value = (bat_status&0x1F);
         bat_value = bat_level_cal(lvd_value);
+        bbat_update = true;                     // 上电/唤醒加载电量后上报蓝牙，与数码管保持一致
         return;
     }
 
