@@ -363,13 +363,13 @@ __RAM_CODE void bat_check(void)
 }
 
 /******************************************************************************
-* 函数名称: led_hint_process
-* 功能描述:
+* 函数名称: led_hint_update
+* 功能描述: 更新数码管电量/充电/低电段码
 * 输入参数:
 * 输出参数:
 * 说    明:
 ******************************************************************************/
-void led_hint_process(void)
+static void led_hint_update(void)
 {
     uint8_t i;
 
@@ -478,4 +478,21 @@ void led_hint_process(void)
             charge_ok_delay_count = 200;
         }
     }
+}
+
+/******************************************************************************
+* 函数名称: led_hint_process
+* 功能描述:
+* 输入参数:
+* 输出参数:
+* 说    明: 段码有变化时清 exled_rtc_count，logo_process() 立即发送，
+*           不再等 500ms 刷新周期(上电显示电量滞后)
+******************************************************************************/
+void led_hint_process(void)
+{
+    uint32_t exled_bak = exled;
+
+    led_hint_update();
+    if(exled_bak != exled)
+        exled_rtc_count = 0;
 }
