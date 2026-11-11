@@ -232,6 +232,33 @@ void __attribute__((noinline)) key_decode_exfun(void)
 }
 
 /******************************************************************************
+* 函数名称: mode_key_switch()
+* 功能描述: 按键切换工作模式(蓝牙/2.4G/USB)
+* 输入参数: type: 目标模式
+* 输出参数: 无
+* 说    明: 保存模式到flash后复位，复位后按flash中的模式启动
+*           切换前的无线模式由 flash_save_status() 记录，USB断开时返回该模式
+******************************************************************************/
+static __attribute__((noinline)) void mode_key_switch(device_type_t type)
+{
+    if(iDEVICE_TYPE_24G >= device_type)
+        wireless_type = device_type;            // 记录当前无线模式
+    if(iDEVICE_TYPE_USB == device_type)
+        OM_RCC->USB_CTRL = 0;                   // USB断开
+
+    device_type = type;
+    if(iDEVICE_TYPE_BT2 >= type)
+        bt_index = type;
+
+    key_ctrl &= ~bwin_mac_sataus;
+    if(sys_mode&(1<<(device_type&0x07)))
+        key_ctrl |= bwin_mac_sataus;
+    flash_save_status();
+    delayus(10000);
+    NVIC_SystemReset();
+}
+
+/******************************************************************************
 * 函数名称: define_key_decode()
 * 功能描述:
 * 输入参数: 无
@@ -682,47 +709,28 @@ std_key_decode_1:
                                 special_key |= bfn_press;
 
                                 break;
-                            case iMODE_KEY_USB&0x0F:   // Fn+4 切换到USB模式
-                                if(iDEVICE_TYPE_USB == device_type)
-                                    break;
-                                if(0 == USB_5V_PIN)
-                                    break;              // 未插USB线不切换
-
-                                if(iDEVICE_TYPE_24G >= device_type)
-                                    wireless_type = device_type;    // 记录当前无线模式，USB断开后返回
-                                device_type = iDEVICE_TYPE_USB;
-                                key_ctrl &= ~bwin_mac_sataus;
-                                if(sys_mode&(1<<(device_type&0x07)))
-                                    key_ctrl |= bwin_mac_sataus;
-                                flash_save_status();
-                                delayus(10000);
-                                NVIC_SystemReset();
+                            case iMODE_KEY_USB&0x0F:   // Fn+4 USB模式
+                                device_key |= bkey_usb_press;
+                                if(0==(device_key_bak&bkey_usb_press_bak))
+                                {
+                                    device_key_bak |= bkey_usb_press_bak;
+                                    if((iDEVICE_TYPE_USB != device_type)
+                                        && (0 != USB_5V_PIN))       // 未插USB线不切换
+                                        mode_key_switch(iDEVICE_TYPE_USB);
+                                }
 
                                 break;
-                            case iMODE_KEY_BT0&0x0F:
-                                if(iDEVICE_TYPE_BT2 < device_type)
-                                    break;
-
+                            case iMODE_KEY_BT0&0x0F:   // Fn+1 蓝牙1
                                 device_key |= bkey_bt0_press;
                                 if(0==(device_key_bak&bkey_bt0_press_bak))
                                 {
                                     device_key_bak |= bkey_bt0_press_bak;
                                     press_bt0_time_count = conn_rtc_value;
-                                
                                     if(iDEVICE_TYPE_BT0 != device_type)
-                                    {
-                                        device_type = iDEVICE_TYPE_BT0;
-                                        bt_index = iDEVICE_TYPE_BT0;
-                                        key_ctrl &= ~bwin_mac_sataus;
-                                        if(sys_mode&(1<<(device_type&0x07)))
-                                            key_ctrl |= bwin_mac_sataus;
-                                        flash_save_status();
-                                        delayus(10000);
-                                        NVIC_SystemReset();
-                                    }
+                                        mode_key_switch(iDEVICE_TYPE_BT0);
                                 }
-                                else
-                                {
+                                else if(iDEVICE_TYPE_BT0 == device_type)
+                                {                                   // 长按3s 蓝牙配对
                                     if(mMS_TO_TICK(3000) < (conn_rtc_value-press_bt0_time_count))
                                     {
                                         if(0 == (ble_24g_ctrl&bom6239_conning))
@@ -734,30 +742,17 @@ std_key_decode_1:
                                 }
 
                                 break;
-                            case iMODE_KEY_BT1&0x0F:
-                                if(iDEVICE_TYPE_BT2 < device_type)
-                                    break;
-
+                            case iMODE_KEY_BT1&0x0F:   // Fn+2 蓝牙2
                                 device_key |= bkey_bt1_press;
                                 if(0==(device_key_bak&bkey_bt1_press_bak))
                                 {
                                     device_key_bak |= bkey_bt1_press_bak;
                                     press_bt1_time_count = conn_rtc_value;
-                                
                                     if(iDEVICE_TYPE_BT1 != device_type)
-                                    {
-                                        device_type = iDEVICE_TYPE_BT1;
-                                        bt_index = iDEVICE_TYPE_BT1;
-                                        key_ctrl &= ~bwin_mac_sataus;
-                                        if(sys_mode&(1<<(device_type&0x07)))
-                                            key_ctrl |= bwin_mac_sataus;
-                                        flash_save_status();
-                                        delayus(10000);
-                                        NVIC_SystemReset();
-                                    }
+                                        mode_key_switch(iDEVICE_TYPE_BT1);
                                 }
-                                else
-                                {
+                                else if(iDEVICE_TYPE_BT1 == device_type)
+                                {                                   // 长按3s 蓝牙配对
                                     if(mMS_TO_TICK(3000) < (conn_rtc_value-press_bt1_time_count))
                                     {
                                         if(0 == (ble_24g_ctrl&bom6239_conning))
@@ -769,30 +764,17 @@ std_key_decode_1:
                                 }
 
                                 break;
-                            case iMODE_KEY_BT2&0x0F:
-                                if(iDEVICE_TYPE_BT2 < device_type)
-                                    break;
-
+                            case iMODE_KEY_BT2&0x0F:   // 蓝牙3(当前Fn层未映射)
                                 device_key |= bkey_bt2_press;
                                 if(0==(device_key_bak&bkey_bt2_press_bak))
                                 {
                                     device_key_bak |= bkey_bt2_press_bak;
                                     press_bt2_time_count = conn_rtc_value;
-
                                     if(iDEVICE_TYPE_BT2 != device_type)
-                                    {
-                                        device_type = iDEVICE_TYPE_BT2;
-                                        bt_index = iDEVICE_TYPE_BT2;
-                                        key_ctrl &= ~bwin_mac_sataus;
-                                        if(sys_mode&(1<<(device_type&0x07)))
-                                            key_ctrl |= bwin_mac_sataus;
-                                        flash_save_status();
-                                        delayus(10000);
-                                        NVIC_SystemReset();
-                                    }
+                                        mode_key_switch(iDEVICE_TYPE_BT2);
                                 }
-                                else
-                                {
+                                else if(iDEVICE_TYPE_BT2 == device_type)
+                                {                                   // 长按3s 蓝牙配对
                                     if(mMS_TO_TICK(3000) < (conn_rtc_value-press_bt2_time_count))
                                     {
                                         if(0 == (ble_24g_ctrl&bom6239_conning))
@@ -804,27 +786,17 @@ std_key_decode_1:
                                 }
 
                                 break;
-                            case iMODE_KEY_24G&0x0F:
-                                if(iDEVICE_TYPE_24G != device_type)
-                                    break;
-
+                            case iMODE_KEY_24G&0x0F:   // Fn+3 2.4G
                                 device_key |= bkey_24g_press;
                                 if(0==(device_key_bak&bkey_24g_press_bak))
                                 {
                                     device_key_bak |= bkey_24g_press_bak;
                                     press_24g_time_count = conn_rtc_value;
-
-//                                    if(iDEVICE_TYPE_24G != device_type)
-//                                    {
-//                                        device_type = iDEVICE_TYPE_24G;
-//                                        bt_index = iDEVICE_TYPE_24G;
-
-//                                        flash_save_status();
-//                                        NVIC_SystemReset();
-//                                    }
+                                    if(iDEVICE_TYPE_24G != device_type)
+                                        mode_key_switch(iDEVICE_TYPE_24G);
                                 }
-                                else
-                                {
+                                else if(iDEVICE_TYPE_24G == device_type)
+                                {                                   // 长按3s 2.4G对码
                                     if(mMS_TO_TICK(3000) < (conn_rtc_value-press_24g_time_count))
                                     {
                                         if(iMCU_MODE_NO_DONGLE == work_mode)
