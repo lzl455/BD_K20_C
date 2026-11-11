@@ -229,7 +229,7 @@ int main(void)
     device_type = iDEVICE_TYPE_ERR;
 
                                                 // ???????????????????????
-    OM_RCC->CLKGATE |= RCC_DEV_CLK_GATE_SWD_CLK_GATE_MASK; // disable jtag
+    OM_RCC->CLKGATE &= ~RCC_DEV_CLK_GATE_SWD_CLK_GATE_MASK; // disable jtag
     hint_led_status = 0;
     kb_led_status = 0;
     mouse_periph_wakeup_enable(WAKEUP_ALL_DISABLE);
@@ -290,7 +290,7 @@ int main(void)
 
         sys_ctrl = 0;
         OM_PMU->SW_RSVD7 = 0;
-        OM_RCC->CLKGATE |= RCC_DEV_CLK_GATE_SWD_CLK_GATE_MASK; // disable jtag
+        OM_RCC->CLKGATE &= ~RCC_DEV_CLK_GATE_SWD_CLK_GATE_MASK; // disable jtag
 
         //OM_PMU->SW_RSVD1 = 0;
         OM_PMU->SW_RSVD1 = (device_type&PMU_SW_RSVD1_RF_MDOE_MASK);

@@ -510,7 +510,7 @@ void scan_mode_swtich(uint8_t type)
     static uint8_t mode_status;
     uint8_t mode_status_bak;
 
-    return ;
+    mode_status_bak = iMODE_USB;
     if(mode_status != mode_status_bak)
     {
         mode_status = mode_status_bak;
