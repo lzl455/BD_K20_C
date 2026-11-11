@@ -317,10 +317,11 @@ void device_led_process(void)
                 {
                     device_led_off();
                     if(mMS_TO_TICK(250) < (rtc_cur_value - led_delay_count))
-                    {
-                        exled_rtc_count=0;
+                    {                          // 翻转时立即更新段码并触发发送，避免等500ms刷新周期导致闪烁间隔不一致
                         bdevice_led_status = true;
                         led_delay_count = rtc_cur_value;
+                        device_led_on();
+                        exled_rtc_count=0;
                     }
                 }
                 else
@@ -328,9 +329,10 @@ void device_led_process(void)
                     device_led_on();
                     if(mMS_TO_TICK(250) < (rtc_cur_value - led_delay_count))
                     {
-                        exled_rtc_count=0;
                         bdevice_led_status = false;
                         led_delay_count = rtc_cur_value;
+                        device_led_off();
+                        exled_rtc_count=0;
                     }
                 }
             }
@@ -364,10 +366,11 @@ void device_led_process(void)
                 {
                     device_led_off();
                     if(mMS_TO_TICK(1000) < (rtc_cur_value - led_delay_count))
-                    {
-                        exled_rtc_count=0;
+                    {                          // 翻转时立即更新段码并触发发送，避免等500ms刷新周期导致闪烁间隔不一致
                         bdevice_led_status = true;
                         led_delay_count = rtc_cur_value;
+                        device_led_on();
+                        exled_rtc_count=0;
                     }
                 }
                 else
@@ -375,9 +378,10 @@ void device_led_process(void)
                     device_led_on();
                     if(mMS_TO_TICK(1000) < (rtc_cur_value - led_delay_count))
                     {
-                        exled_rtc_count=0;
                         bdevice_led_status = false;
                         led_delay_count = rtc_cur_value;
+                        device_led_off();
+                        exled_rtc_count=0;
                     }
                 }
             }
