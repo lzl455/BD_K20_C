@@ -529,13 +529,7 @@ void logo_process(void)
                 break;
             case iMODE_LED_LG_L_R:
                 delay_time_count = 0;
-                led_status_reg = 0xCCCC;
-
-                for(i=0; i<iLED_MAX; i++)
-                {
-                    pwm_duty_array_0[i] = led_liuguang_l_r_tbl[i];
-                    pwm_duty_array_1[i] = led_liuguang_rgb_tbl[i];
-                }
+                liuguang_phase = 0;
 
                 break;
             case iMODE_LED_STAR:

@@ -306,72 +306,79 @@ void led_mode_nhjb(void)
 // 代码区                                                                      ;
 //=============================================================================;
 
+/******************************************************************************
+* 函数名称: led_mode_liuguang
+* 功能描述: 流光 —— 柔和的光带沿一个方向持续流动
+* 说    明: 用一个相位累加器描述整条灯带的图案，每颗灯取 相位-灯序号*iLG_LED_STEP，
+*           亮度与颜色都只由该相位决定，图案整体平移，因此光带与颜色一起流动：
+*           - 亮度: 三角波经 smoothstep 圆滑，波峰波谷过渡柔和(无尖角/台阶)
+*           - 七彩: 色相随相位连续变化(红→绿→蓝→红)，相邻灯平滑过渡，颜色随光带移动
+*           - 单色: 使用当前选择的颜色，只做亮度流动
+******************************************************************************/
+#define iLG_WAVE_PERIOD         256             // 一个光带周期的相位长度
+#define iLG_LED_STEP            64              // 相邻灯相位差: 4颗灯一个光带，8颗灯可见2条光带
+#define iLG_PHASE_INC           2               // 每帧相位增量: 128帧一个光带周期(与原流光速度一致)
+#define iLG_HUE_SHIFT           2               // 色相 = 相位>>2，相邻灯色相差16/192，颜色与光带同步移动
+#define iLG_HUE_MAX             (3*iPWM_MAX)    // 色环长度: R→G→B→R 三段，每段 iPWM_MAX 级
+
+uint16_t                        liuguang_phase;
+
+static uint8_t liuguang_wave(uint8_t p)
+{                                               // 相位(0~255) -> 亮度(0~iPWM_MAX)
+    uint32_t t;
+
+    t = (p < (iLG_WAVE_PERIOD/2)) ? p : ((iLG_WAVE_PERIOD-1) - p);       // 三角波 0~127
+    t = (t * iPWM_MAX + (iLG_WAVE_PERIOD/4)) / ((iLG_WAVE_PERIOD/2)-1);   // 缩放到 0~iPWM_MAX
+    if(iPWM_MAX < t)
+        t = iPWM_MAX;
+    // smoothstep: t*t*(3-2t)，波峰波谷处变化放缓，亮度变化更圆滑
+    t = (t * t * (3*iPWM_MAX - 2*t)) / (iPWM_MAX * iPWM_MAX);
+    return (uint8_t)t;
+}
+
 void led_mode_liuguang(void)
 {
-    unsigned char i, k;
-    uint16_t x;
+    unsigned char k, led;
+    uint16_t v, hue;
+    uint8_t  b, f, r, g, bl;
 
     if(led_speed_lev>delay_time_count)
     {
-		delay_time_count++;
+        delay_time_count++;
         return;
-	}
+    }
     delay_time_count = 0;
 
-    x = 0x01;
-    for(i=0; i<iLED_MAX; i++)
-    {
-        if(led_status_reg & x)
-        {
-            pwm_duty_array_0[i]++;
-            if(iPWM_MAX <= pwm_duty_array_0[i])
-            {
-                led_status_reg &= ~x;
-            }
-        }
-        else
-        {
-            pwm_duty_array_0[i]--;
-            if(0 == pwm_duty_array_0[i])
-            {
-                pwm_duty_array_1[i]++;
-                if(7 < pwm_duty_array_1[i])
-                    pwm_duty_array_1[i]=1;
-                led_status_reg |= x;
-            }
-        }
-        x <<= 1;
-    }
-
+    liuguang_phase += iLG_PHASE_INC;
     rgb_enable = rgb_en_tbl[led_rgb_index&0x0F];
 
     for(k=0; k<iLED_MAX; k++)
     {
-        if(bled_run_dir)
-        {
-            gtemp_j = pwm_duty_array_0[k];
-            if(iRGB_QICAI == led_rgb_index)
-                rgb_enable = pwm_duty_array_1[k];
-        }
-        else
-        {
-            gtemp_j = pwm_duty_array_0[iLED_MAX-1-k];
-            if(iRGB_QICAI == led_rgb_index)
-                rgb_enable = pwm_duty_array_1[iLED_MAX-1-k];
-        }
+        led = bled_run_dir ? k : (iLED_MAX-1-k);   // 流动方向
+        v = (uint16_t)(liuguang_phase - (uint16_t)(k*iLG_LED_STEP));
+        b = liuguang_wave((uint8_t)(v & (iLG_WAVE_PERIOD-1)));
 
-        if(rgb_enable&iPWM_R)
-            pwm_rgb_tbl[k][iR_INDEX] = gtemp_j;
+        if(iRGB_QICAI == led_rgb_index)
+        {                                       // 七彩: 连续色相 -> RGB(0~iPWM_MAX)，再乘亮度
+            hue = (v >> iLG_HUE_SHIFT) % iLG_HUE_MAX;
+            f = (uint8_t)(hue % iPWM_MAX);
+            if(hue < iPWM_MAX)
+            {   r = iPWM_MAX - f;  g = f;             bl = 0;           }
+            else if(hue < 2*iPWM_MAX)
+            {   r = 0;             g = iPWM_MAX - f;  bl = f;           }
+            else
+            {   r = f;             g = 0;             bl = iPWM_MAX - f;}
+
+            pwm_rgb_tbl[led][iR_INDEX] = (uint8_t)((r  * b) / iPWM_MAX);
+            pwm_rgb_tbl[led][iG_INDEX] = (uint8_t)((g  * b) / iPWM_MAX);
+            pwm_rgb_tbl[led][iB_INDEX] = (uint8_t)((bl * b) / iPWM_MAX);
+        }
         else
-            pwm_rgb_tbl[k][iR_INDEX] = 0;
-        if(rgb_enable&iPWM_G)
-            pwm_rgb_tbl[k][iG_INDEX] = gtemp_j;
-        else
-            pwm_rgb_tbl[k][iG_INDEX] = 0;
-        if(rgb_enable&iPWM_B)
-            pwm_rgb_tbl[k][iB_INDEX] = gtemp_j;
-        else
-            pwm_rgb_tbl[k][iB_INDEX] = 0;
+        {                                       // 单色: 只做亮度流动
+            pwm_rgb_tbl[led][iR_INDEX] = (rgb_enable&iPWM_R) ? b : 0;
+            pwm_rgb_tbl[led][iG_INDEX] = (rgb_enable&iPWM_G) ? b : 0;
+            pwm_rgb_tbl[led][iB_INDEX] = (rgb_enable&iPWM_B) ? b : 0;
+        }
     }
 }
 

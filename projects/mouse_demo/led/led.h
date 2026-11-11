@@ -141,6 +141,7 @@ extern uint8_t                  rgb_enable;
 
 extern uint16_t                 led_ctrl_reg;
 extern uint16_t                 led_status_reg;
+extern uint16_t                 liuguang_phase;
 extern uint8_t                  led_use_flag;
 
 extern uint8_t                  led_cur_mode;
