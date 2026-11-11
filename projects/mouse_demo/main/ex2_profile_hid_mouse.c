@@ -68,6 +68,16 @@ bool profile_bas_tx_notification(uint8_t level)
     }
     return false;
 }
+
+/**
+ * @brief 同步 BAS 电量特征值（主机读取时返回该值），不发送 notification。
+ *
+ * @param [in] level - Battery level in percentage [0~100].
+ */
+void profile_bas_set_level(uint8_t level)
+{
+    _bas_bat_lvl_value = level;
+}
 #endif  /* (PROFILE_SIG_BAS) */
 
 /* HIDS profile ------------------------------------------------------------- */
