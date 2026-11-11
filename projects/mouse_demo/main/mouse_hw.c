@@ -129,8 +129,13 @@ pmu_lpm_t pm_checker_callback(void)
 
                 drv_encoder_control(OM_ENCODER, ENCODER_CONTROL_STOP, NULL);
                 mouse_periph_wakeup_enable(WAKEUP_SLEEP_LEVEL2);
+                delayus(1000);                  // 等待行列/上拉切换稳定，清除切换过程中产生的唤醒中断
+                OM_GPIO0->INTSTATUS = OM_GPIO0->INTSTATUS;
+                drv_pmu_clear_wakeup();
+                NVIC_ClearPendingIRQ(WAKEUP_GPIO0_IRQn);
                 bperiph_int = 0;                // 清除休眠前残留的唤醒标志，避免立即复位重新回连
             }
+            drv_wdt_keep_alive(OM_WDT);         // 广播已停止无RF中断喂狗，避免看门狗复位后重新对码
 
             if((bat_status & bcharge_ok)!=0)
             {
@@ -389,6 +394,7 @@ __RAM_CODE void drv_rtc_isr_callback(void)
     {
         while (0 == (OM_RTC->CR & RTC_CR_ALARM0_WRITE_STATUS_MASK));
         OM_RTC->ALARM0 = (rtc_count + mMS_TO_TICK(16));
+        drv_wdt_keep_alive(OM_WDT);             // LEVEL2(充电)无RF中断，在RTC中断中喂狗
         led_hint_process();
         return;
     }
