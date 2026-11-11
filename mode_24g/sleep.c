@@ -136,8 +136,7 @@ void sleep_process(void)
                         }
                         else
                         {
-                            if(0 == (bat_status&bcharging))
-                                break;
+                            break;              // 回连次数用完，插电与未插电都退出等待
                         }
                     }
                     while(1);
@@ -147,6 +146,41 @@ void sleep_process(void)
                     {
                         if(0 == (bat_status&bcharging))
                             goto MCU_MODE_PD_PRPCESS;
+
+                        // 充电中: 与未插电一致，停止回连进入休眠(不能深睡，需保留充电显示)
+                        // 按键/滚轮唤醒后复位，与深睡眠唤醒流程一致
+                        logo_off();
+                        device_led_off();
+                        exLogo_send();
+                        mouse_periph_wakeup_enable(WAKEUP_SLEEP_LEVEL2);
+                        bperiph_int = 0;
+
+                        i = 0;
+                        while(1)
+                        {
+                            rf_normal_mode_sleep();
+                            drv_wdt_keep_alive(OM_WDT);
+                            if(bperiph_int)
+                                NVIC_SystemReset();
+
+                            i++;
+                            if(3==(i&0x07))
+                            {
+                                led_hint_process();
+                                if(0 == (bat_status&bcharging))
+                                    goto MCU_MODE_PD_PRPCESS;     // 拔掉USB，进入深睡眠
+                            }
+                            else if(0==(i&0x07))
+                            {
+                                if(0 != (bat_status&bcharge_ok))
+                                {                               // 充电完成，熄灭数码管
+                                    exled_ctrl = 0x02;
+                                    exLogo_send();
+                                }
+                                else
+                                    logo_process();
+                            }
+                        }
                     }
 
                     mouse_24g_init();
