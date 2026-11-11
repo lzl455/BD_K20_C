@@ -415,6 +415,8 @@ void logo_process(void)
 {
     uint8_t i;
     uint32_t rtc_temp;
+    uint32_t frames;
+    static uint32_t logo_frame_time;            // 上一帧灯效推进时的RTC时间
 
     rtc_temp = drv_rtc_read(OM_RTC);
     if((mMS_TO_TICK(500) < (rtc_temp-exled_rtc_count))||(0 == exled_rtc_count))
@@ -477,6 +479,7 @@ void logo_process(void)
     {
         ledc_init();
         OM_GPIO0->DATAOUTCLR = (1<<ARGB_OUT_PIN);
+        logo_frame_time = rtc_temp;             // 重新开灯，帧计时从当前开始
     }
     if(0 != exio_ctrl)
     {
@@ -487,6 +490,7 @@ void logo_process(void)
     if(led_pre_mode != led_cur_mode)
     {
         led_pre_mode = led_cur_mode;
+        logo_frame_time = rtc_temp;
 
         led_process_index = 0;
         rgb_index = 0;
@@ -577,6 +581,20 @@ void logo_process(void)
     {
         //bled_hint_ing = 1;
 
+        // 按RTC时间推进灯效，避免调用间隔不均(蓝牙连接事件/按键唤醒/发数据等)导致忽快忽慢、卡顿：
+        //  距上一帧不足 (iLOGO_FRAME_MS-iLOGO_FRAME_TOL_MS) 不推进，防止密集调用时加速；
+        //  距上一帧达到 (2*iLOGO_FRAME_MS-iLOGO_FRAME_TOL_MS) 补走一帧，防止调用稀疏时变慢
+        frames = (rtc_temp - logo_frame_time);
+        if(mMS_TO_TICK(iLOGO_FRAME_MS-iLOGO_FRAME_TOL_MS) > frames)
+            return;
+        if(mMS_TO_TICK(2*iLOGO_FRAME_MS-iLOGO_FRAME_TOL_MS) <= frames)
+            frames = 2;
+        else
+            frames = 1;
+        logo_frame_time = rtc_temp;
+
+        while(frames--)
+        {
         switch(led_cur_mode)
         {
             case iMODE_LED_OFF:
@@ -621,6 +639,7 @@ void logo_process(void)
             case iMODE_LED_FXTW:
                 led_mode_txtw();
                 break;
+        }
         }
     }
 }
